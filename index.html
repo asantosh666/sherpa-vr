@@ -85,6 +85,10 @@ vid.loop = false;
 
 const vidTex = new THREE.VideoTexture(vid);
 vidTex.colorSpace = THREE.SRGBColorSpace;
+// Yaw-align: travelers sit at u≈0.616 in the equirect; three.js maps world -Z
+// to u=0.75, so offset.x = 0.616-0.75 centers the action on initial forward.
+vidTex.wrapS = THREE.RepeatWrapping;
+vidTex.offset.x = -0.134;
 const sphereMat = new THREE.MeshBasicMaterial({ map: vidTex, side: THREE.BackSide });
 sphereMat.color.setHex(0x000000);   // start black; fades up on "begin"
 const videoSphere = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48), sphereMat);
