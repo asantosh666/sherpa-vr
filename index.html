@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Sherpa — Pinch Sandbox (week-1 spike)</title>
+<title>Sherpa — Scene 1: Arrival</title>
 <style>
-  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#1a1a1a;
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000;
                font-family: system-ui, -apple-system, sans-serif; color:#eee; }
   #overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-             justify-content:center; text-align:center; padding:24px; z-index:10; }
-  #overlay h1 { font-size:28px; margin:0 0 12px; }
+             justify-content:center; text-align:center; padding:24px; z-index:10; background:#0b0d10; }
+  #overlay h1 { font-size:28px; margin:0 0 12px; font-weight:600; }
   #overlay p { max-width:520px; line-height:1.5; color:#bbb; }
   #enter { margin-top:20px; padding:16px 48px; font-size:20px; border:none; border-radius:12px;
-           background:#4a9eff; color:#fff; cursor:pointer; }
+           background:#c8862a; color:#fff; cursor:pointer; }
   #enter:disabled { background:#555; cursor:default; }
-  #hud { position:absolute; top:12px; left:12px; font-size:13px; color:#888; z-index:5;
-         background:rgba(0,0,0,.45); padding:8px 12px; border-radius:8px; display:none; }
+  #dbg { position:absolute; top:12px; left:12px; font-size:13px; color:#888; z-index:5;
+         background:rgba(0,0,0,.45); padding:8px 12px; border-radius:8px; display:none;
+         max-width:60ch; }
   canvas { display:block; }
 </style>
 <script type="importmap">
@@ -27,212 +28,218 @@
 </head>
 <body>
 <div id="overlay">
-  <h1>Pinch Sandbox</h1>
-  <p>Sherpa week-1 hand-tracking spike. Grey room, one sphere, one portal.<br>
-     Put on the Quest, enter VR, and pinch the glowing sphere.<br>
+  <h1>Sherpa — Scene 1: Arrival</h1>
+  <p>A highland plain in Nepal. Travelers approach on the trail.<br>
+     Put on the Quest, enter VR, and pinch the glowing trail marker.<br>
      <span id="xrmessage">Checking WebXR support…</span></p>
   <button id="enter" disabled>Enter VR</button>
 </div>
-<div id="hud"></div>
+<div id="dbg"></div>
 
 <script type="module">
 import * as THREE from 'three';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
-/* ------------------------------------------------------------------
+/* ==================================================================
    Tunables — from sherpa/hand-feel-polish-guide.md
-   ------------------------------------------------------------------ */
+   - Pinch SELECT: runtime selectstart/selectend ONLY (OS-tuned).
+   - Manual joint-distance math: progress-ring feedback ONLY.
+   ================================================================== */
 const T = {
-  PINCH_ON_MM: 25, PINCH_OFF_MM: 35,      // hysteresis band (manual detector)
-  DEBOUNCE_MS: 90,                        // state must persist this long
-  RING_FILL_START_MM: 90,                 // ring starts filling at 9cm
-  SPHERE_DIST_M: 0.45, SPHERE_VIS_R: 0.020, SPHERE_HIT_R: 0.030,
-  PORTAL_DIST_M: 2.0, PORTAL_R: 0.14,     // 28cm disc
-  RAY_FREEZE_MS: 120,                     // freeze ray after selectstart (pinch jitter)
+  PINCH_ON_MM: 25, PINCH_OFF_MM: 35,   // hysteresis band, manual detector
+  DEBOUNCE_MS: 90,                     // reading must persist this long
+  RING_FILL_START_MM: 90,              // ring starts filling at 9cm
+  MARKER_DIST_M: 0.45,                 // poke range, dead-center, slightly low
+  MARKER_VIS_R: 0.015, MARKER_HIT_R: 0.030,  // visual < collider (4-6dp padding rule)
+  RAY_FREEZE_MS: 120,                  // freeze ray after selectstart (pinch jitter)
   HAND_FADE_MS: 180,
-  REACQUIRE_LERP_MS: 120,
-  HELD_LATCH_MS: 1500,
   DOUBLE_FIRE_GUARD_MS: 150,
+  CAPTION_DIST_M: 1.2,
 };
 
-/* ------------------------------------------------------------------
-   Renderer / scene
-   ------------------------------------------------------------------ */
-const renderer = new THREE.WebGLRenderer({ antialias:true });
+/* ==================================================================
+   Renderer / scene / camera
+   ================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
-renderer.xr.setReferenceSpaceType('local-floor');
+renderer.xr.setReferenceSpaceType('local-floor');   // seated
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x2a2d33);
-scene.fog = new THREE.Fog(0x2a2d33, 6, 14);
+scene.background = new THREE.Color(0x000000);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 60);
 
-const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 60);
+// Soft ambient so hand meshes read against the video sphere
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x20242a, 0.7));
 
-scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x20242a, 1.1));
-const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(1.5, 3, 1); scene.add(key);
+/* ==================================================================
+   360 video sphere (equirectangular)
+   ================================================================== */
+const vid = document.createElement('video');
+vid.src = 'scene1-044-360.mp4';
+vid.preload = 'auto';
+vid.playsInline = true;
+vid.loop = false;
 
-// Grey room: big inverted box
-{
-  const room = new THREE.Mesh(
-    new THREE.BoxGeometry(12, 6, 12),
-    new THREE.MeshStandardMaterial({ color:0x3a3e45, side:THREE.BackSide, roughness:1 })
-  );
-  room.position.y = 2.2; scene.add(room);
-  const grid = new THREE.GridHelper(12, 24, 0x555a63, 0x42464d);
-  grid.position.y = 0.001; scene.add(grid); // local-floor: y=0 is the real floor
-}
+const vidTex = new THREE.VideoTexture(vid);
+vidTex.colorSpace = THREE.SRGBColorSpace;
+const sphereMat = new THREE.MeshBasicMaterial({ map: vidTex, side: THREE.BackSide });
+sphereMat.color.setHex(0x000000);   // start black; fades up on "begin"
+const videoSphere = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48), sphereMat);
+scene.add(videoSphere);
 
-/* ------------------------------------------------------------------
-   Audio — tiny synth (no assets). AudioContext starts on user gesture.
-   ------------------------------------------------------------------ */
+/* ==================================================================
+   Audio — tiny synth for UI feedback (video carries its own ambience)
+   ================================================================== */
 let AC = null;
-function audio() { if (!AC) AC = new (window.AudioContext||window.webkitAudioContext)(); return AC; }
-function blip(freq, durMs, type='triangle', gain=0.25, when=0) {
+function audio() { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); return AC; }
+function blip(freq, durMs, type = 'triangle', gain = 0.25, when = 0) {
   try {
-    const ac = audio(), t = ac.currentTime + when/1000;
+    const ac = audio(), t = ac.currentTime + when / 1000;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = type; o.frequency.value = freq;
     g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + durMs/1000);
-    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + durMs/1000 + 0.02);
-  } catch(e) {}
+    g.gain.exponentialRampToValueAtTime(0.001, t + durMs / 1000);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + durMs / 1000 + 0.02);
+  } catch (e) {}
 }
-const sfxClick   = () => blip(660, 80, 'triangle', 0.28);                    // selection commit
-const sfxIgnite  = () => { blip(392, 140, 'sine', 0.22); blip(587, 220, 'sine', 0.18, 90); };
-const sfxPortal  = () => { blip(220, 300, 'sawtooth', 0.10); blip(440, 300, 'sine', 0.16, 120); };
+const sfxClick = () => blip(660, 80, 'triangle', 0.28);                       // commit
+const sfxBegin = () => { blip(392, 200, 'sine', 0.20); blip(523, 260, 'sine', 0.18, 110); blip(659, 340, 'sine', 0.14, 220); }; // arrival chime
 
-/* ------------------------------------------------------------------
-   Targets: sphere (45cm) + portal disc (2m)
-   ------------------------------------------------------------------ */
-const interactables = [];
-const raycaster = new THREE.Raycaster();
+/* ==================================================================
+   Trail marker — the ONE interactive beat of Scene 1
+   ================================================================== */
+const marker = new THREE.Group();
+const markerCore = new THREE.Mesh(
+  new THREE.SphereGeometry(T.MARKER_VIS_R, 24, 16),
+  new THREE.MeshStandardMaterial({ color: 0xffc861, emissive: 0xa86a12, roughness: 0.4 })
+);
+const markerHit = new THREE.Mesh(
+  new THREE.SphereGeometry(T.MARKER_HIT_R, 12, 8),
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+marker.add(markerCore, markerHit);
+marker.userData.hit = markerHit;
+scene.add(marker);
 
-// --- Sphere ---
-const sphereGroup = new THREE.Group();
-const sphereMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(T.SPHERE_VIS_R, 32, 24),
-  new THREE.MeshStandardMaterial({ color:0x66aaff, emissive:0x1a3a66, roughness:0.35 })
+// Invitation pulse ring around the marker
+const pulseRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.028, 0.033, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffc861, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
 );
-const sphereHit = new THREE.Mesh(
-  new THREE.SphereGeometry(T.SPHERE_HIT_R, 12, 8),
-  new THREE.MeshBasicMaterial({ visible:false })
-);
-sphereGroup.add(sphereMesh, sphereHit);
-sphereGroup.userData = { kind:'sphere', mesh:sphereMesh, hit:sphereHit, baseColor:new THREE.Color(0x66aaff) };
-interactables.push(sphereGroup);
+scene.add(pulseRing);
 
-// pinch-progress ring around the sphere (billboarded in loop)
-const ringMesh = new THREE.Mesh(
-  new THREE.RingGeometry(0.035, 0.043, 48),
-  new THREE.MeshBasicMaterial({ color:0xffc861, transparent:true, opacity:0.95, side:THREE.DoubleSide })
+// Pinch-progress ring (manual detector drives this; runtime events do the click)
+const progRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.040, 0.047, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffe1a1, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
 );
-ringMesh.visible = false;
-scene.add(ringMesh);
-let ringProgressShown = -1;
-function setRing(progress) { // progress 0..1
-  const q = Math.round(progress * 40) / 40;
-  if (q === ringProgressShown) return;
-  ringProgressShown = q;
-  ringMesh.visible = q > 0.01;
-  ringMesh.geometry.dispose();
-  ringMesh.geometry = new THREE.RingGeometry(0.035, 0.043, 48, 1, Math.PI/2, Math.max(0.001, q * Math.PI*2));
+progRing.visible = false;
+scene.add(progRing);
+let progShown = -1;
+function setProg(p) {
+  const q = Math.round(p * 40) / 40;
+  if (q === progShown) return;
+  progShown = q;
+  progRing.visible = q > 0.01;
+  progRing.geometry.dispose();
+  progRing.geometry = new THREE.RingGeometry(0.040, 0.047, 48, 1, Math.PI / 2, Math.max(0.001, q * Math.PI * 2));
 }
 
-// --- Portal disc ---
-const portalGroup = new THREE.Group();
-const portalMesh = new THREE.Mesh(
-  new THREE.CircleGeometry(T.PORTAL_R, 48),
-  new THREE.MeshStandardMaterial({ color:0x24303f, emissive:0x0e2a4a, roughness:0.6, side:THREE.DoubleSide })
+/* ==================================================================
+   Caption line — head-anchored, non-interactive, 1.2m
+   ================================================================== */
+const capCanvas = document.createElement('canvas'); capCanvas.width = 1024; capCanvas.height = 128;
+const capTex = new THREE.CanvasTexture(capCanvas);
+const caption = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.9, 0.1125),
+  new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false })
 );
-const portalRim = new THREE.Mesh(
-  new THREE.RingGeometry(T.PORTAL_R, T.PORTAL_R + 0.02, 48),
-  new THREE.MeshBasicMaterial({ color:0x4a9eff, side:THREE.DoubleSide })
-);
-const portalHit = new THREE.Mesh(
-  new THREE.CircleGeometry(T.PORTAL_R + 0.03, 24),
-  new THREE.MeshBasicMaterial({ visible:false, side:THREE.DoubleSide })
-);
-portalGroup.add(portalMesh, portalRim, portalHit);
-portalGroup.userData = { kind:'portal', mesh:portalMesh, hit:portalHit, baseColor:new THREE.Color(0x24303f) };
-interactables.push(portalGroup);
-scene.add(sphereGroup);
-
-/* Place targets relative to the headset once the session starts */
-let placed = false;
-function placeTargets() {
-  if (placed) return; placed = true;
+caption.renderOrder = 5; caption.visible = false;
+scene.add(caption);
+function setCaption(text) {
+  const c = capCanvas.getContext('2d');
+  c.clearRect(0, 0, 1024, 128);
+  c.font = '44px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.shadowColor = 'rgba(0,0,0,0.9)'; c.shadowBlur = 12;
+  c.fillStyle = '#fff';
+  c.fillText(text, 512, 64);
+  capTex.needsUpdate = true;
+}
+function placeCaption() {
   const p = new THREE.Vector3(), q = new THREE.Quaternion();
   camera.getWorldPosition(p); camera.getWorldQuaternion(q);
-  const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
-  const eyeH = p.y;
-  sphereGroup.position.copy(p).addScaledVector(fwd, T.SPHERE_DIST_M);
-  sphereGroup.position.y = eyeH - 0.08;                       // slightly below eye level
-  portalGroup.position.copy(p).addScaledVector(fwd, T.PORTAL_DIST_M);
-  portalGroup.position.y = eyeH;
-  portalGroup.quaternion.copy(q);
-  scene.add(portalGroup);
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
+  caption.position.copy(p).addScaledVector(fwd, T.CAPTION_DIST_M);
+  caption.position.y = p.y - 0.28;   // lower third — out of the sightline, readable
+  caption.quaternion.copy(q);
+  caption.visible = true;
 }
 
-/* ------------------------------------------------------------------
-   HUD scoreboard (pinch counts for the 50-pinch test)
-   ------------------------------------------------------------------ */
-const hudCanvas = document.createElement('canvas'); hudCanvas.width = 512; hudCanvas.height = 128;
-const hudTex = new THREE.CanvasTexture(hudCanvas);
-const hudPlane = new THREE.Mesh(
-  new THREE.PlaneGeometry(0.5, 0.125),
-  new THREE.MeshBasicMaterial({ map:hudTex, transparent:true })
-);
-hudPlane.visible = false; scene.add(hudPlane);
-let pinchCount = 0, missCount = 0;
-function drawHud() {
-  const c = hudCanvas.getContext('2d');
-  c.clearRect(0,0,512,128); c.fillStyle = 'rgba(0,0,0,0.55)'; c.fillRect(0,0,512,128);
-  c.fillStyle = '#fff'; c.font = 'bold 44px system-ui';
-  c.fillText(`PINCHES  ${pinchCount}`, 28, 56);
-  c.fillStyle = '#ff9a9a'; c.font = '32px system-ui';
-  c.fillText(`misses ${missCount}`, 28, 104);
-  hudTex.needsUpdate = true;
-}
-function placeHud() {
+/* ==================================================================
+   Scene flow: IDLE -> BEGINNING -> PLAYING -> ENDED(replay)
+   ================================================================== */
+const Flow = { IDLE: 0, BEGINNING: 1, PLAYING: 2, ENDED: 3 };
+let flow = Flow.IDLE;
+let fadeT = 0;
+
+function placeMarker() {
   const p = new THREE.Vector3(), q = new THREE.Quaternion();
   camera.getWorldPosition(p); camera.getWorldQuaternion(q);
-  const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q);
-  hudPlane.position.copy(p).addScaledVector(fwd, 1.2); hudPlane.position.y += 0.35;
-  hudPlane.quaternion.copy(q); hudPlane.visible = true;
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
+  marker.position.copy(p).addScaledVector(fwd, T.MARKER_DIST_M);
+  marker.position.y = p.y - 0.10;    // slightly below eye level, lower = less fatigue
+  marker.visible = true;
+  marker.scale.setScalar(1);
+  markerCore.material.emissive.setHex(0xa86a12);
+  pulseRing.visible = true;
 }
 
-/* ------------------------------------------------------------------
-   Hands: models, rays, reticle, per-hand state
-   ------------------------------------------------------------------ */
+function beginWalk() {
+  flow = Flow.BEGINNING; fadeT = performance.now();
+  sfxBegin();
+  setCaption('The trail is waiting.');
+  // marker dissolves as the world fades up
+  pulseRing.visible = false; setProg(0);
+}
+
+vid.addEventListener('ended', () => {
+  if (flow !== Flow.PLAYING) return;
+  flow = Flow.ENDED;
+  setCaption('Walk it again — pinch the marker.');
+  placeMarker();
+});
+
+/* ==================================================================
+   Hands — models, rays, reticle, fade protocol
+   ================================================================== */
 const handFactory = new XRHandModelFactory();
-const hands = [null, null]; // index 0/1 -> controller slot
+const hands = [null, null];
 const tmpV1 = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), tmpV3 = new THREE.Vector3();
 const tmpQ = new THREE.Quaternion();
+const NEG_Z = new THREE.Vector3(0, 0, -1);
 
 function makeHandSlot(i) {
   const controller = renderer.xr.getController(i);
-  const handObj = renderer.xr.getHand(i);   // joints live here, not on the controller
+  const handObj = renderer.xr.getHand(i);
   const state = {
-    controller, handObj, hand:null, handedness:'?', model:null,
+    controller, handObj, hand: null, handedness: '?', model: null,
     ray: new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,0,-1)]),
-      new THREE.LineBasicMaterial({ color:0x88bbff, transparent:true, opacity:0.5 })
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
+      new THREE.LineBasicMaterial({ color: 0x88bbff, transparent: true, opacity: 0.45 })
     ),
     reticle: new THREE.Mesh(
       new THREE.SphereGeometry(0.008, 12, 8),
-      new THREE.MeshBasicMaterial({ color:0x88bbff })
+      new THREE.MeshBasicMaterial({ color: 0x88bbff })
     ),
-    hover:null,            // interactable group currently hovered
-    frozenRay:null, frozenUntil:0,
-    pinch:false, pendingPinch:false, pendingSince:0,   // manual detector (ring only)
-    dRelaxed:[], dPinched:[], calibrated:false, pinchOnMm:T.PINCH_ON_MM,
-    fade:1, fading:'in', lastPos:new THREE.Vector3(), reacquireT:0,
-    heldSince:0,           // for 1.5s latch bookkeeping
+    hover: false,
+    frozenO: new THREE.Vector3(), frozenD: new THREE.Vector3(), frozenUntil: 0,
+    pinch: false, pendingPinch: false, pendingSince: 0,
+    fade: 1, fading: 'none',
   };
-  state.ray.scale.z = 5; state.reticle.visible = false;
+  state.ray.scale.z = 4; state.reticle.visible = false;
   scene.add(state.ray, state.reticle);
   controller.addEventListener('connected', (e) => onConnected(i, e));
   controller.addEventListener('disconnected', () => onDisconnected(i));
@@ -250,97 +257,48 @@ function onConnected(i, e) {
     s.handObj.add(s.model);
   }
   if (s.model) s.model.visible = true;
-  s.fade = 0; s.fading = 'in';
-  s.controller.getWorldPosition(s.lastPos);
-  s.reacquireT = performance.now();
-  log(`hand connected: ${s.handedness}`);
+  s.fade = 0; s.fading = 'in'; s.ray.visible = true;
+  dbg(`hand connected: ${s.handedness}`);
 }
 function onDisconnected(i) {
   const s = hands[i]; if (!s) return;
-  s.fading = 'out';                     // fade protocol; world keeps running
-  s.hover = null;
-  // never leave a target stuck in "pressed" if the hand vanished mid-pinch
-  for (const g of interactables) {
-    const u = g.userData;
-    u.mesh.position.z = 0;
-    u.mesh.material.emissive.setHex(g.userData.kind === 'sphere' ? 0x1a3a66 : 0x0e2a4a);
-  }
-  log(`hand disconnected: ${s.handedness}`);
+  s.fading = 'out'; s.hover = false;   // fade protocol; world keeps running
+  markerCore.position.z = 0;
+  dbg(`hand disconnected: ${s.handedness}`);
 }
 
-/* ---- discrete selection: runtime selectstart/selectend ONLY ---- */
-let lastSelectAt = 0, lastSelectTarget = null;
+/* ---- discrete selection: runtime events ONLY ---- */
+let lastSelectAt = 0;
 function onSelectStart(i) {
-  const s = hands[i]; if (!s) return;
+  const s = hands[i]; if (!s || flow === Flow.BEGINNING || flow === Flow.PLAYING) return;
   const now = performance.now();
-  // commit to the HOVER target (pinch jitter moves the ray at commit time)
-  const target = s.hover;
-  if (target && !(lastSelectTarget === target && now - lastSelectAt < T.DOUBLE_FIRE_GUARD_MS)) {
-    lastSelectAt = now; lastSelectTarget = target;
-    pinchCount++; drawHud();
+  if (s.hover && marker.visible && now - lastSelectAt > T.DOUBLE_FIRE_GUARD_MS) {
+    lastSelectAt = now;
     sfxClick();
-    // freeze ray origin 120ms so the pinch motion can't yank aim
-    s.controller.getWorldPosition(tmpV1); rayDirFrom(s.controller, tmpV2);
-    s.frozenRay = { o: tmpV1.clone(), d: tmpV2.clone() }; s.frozenUntil = now + T.RAY_FREEZE_MS;
+    // freeze ray origin so the pinch motion can't yank aim (guide §6.1)
+    s.controller.getWorldPosition(s.frozenO); rayDir(s.controller, s.frozenD);
+    s.frozenUntil = now + T.RAY_FREEZE_MS;
     // press beat: 7mm travel + color shift
-    const u = target.userData;
-    u.mesh.position.z -= 0.007;
-    u.mesh.material.emissive.setHex(target.userData.kind === 'sphere' ? 0x2a5aaa : 0x1a4a88);
-    s.heldSince = now;
-    // calibration: record pinched distance at first runtime select
-    if (!s.calibrated && s.dRelaxed.length) {
-      const med = s.dRelaxed.sort((a,b)=>a-b)[Math.floor(s.dRelaxed.length/2)];
-      const dp = pinchDistMm(s);
-      if (dp > 0) {
-        s.pinchOnMm = Math.min(35, Math.max(20, dp + 0.3 * (med - dp)));
-        s.calibrated = true; log(`calibrated pinchOn=${s.pinchOnMm.toFixed(1)}mm (${s.handedness})`);
-      }
-    }
-  } else if (!target) {
-    missCount++; drawHud(); // pinch at nothing — counts for the false-positive audit
+    markerCore.position.z -= 0.007;
+    markerCore.material.emissive.setHex(0xe09a2a);
   }
 }
 function onSelectEnd(i) {
   const s = hands[i]; if (!s) return;
-  const now = performance.now();
-  // release beat must start ≤100ms — do it synchronously here
-  for (const g of interactables) {
-    const u = g.userData;
-    u.mesh.position.z = 0;
-    u.mesh.material.emissive.setHex(g.userData.kind === 'sphere' ? 0x1a3a66 : 0x0e2a4a);
+  markerCore.position.z = 0;
+  if (lastSelectAt && performance.now() - lastSelectAt < 2000 && marker.visible &&
+      (flow === Flow.IDLE || flow === Flow.ENDED)) {
+    lastSelectAt = 0;
+    beginWalk();   // release beat starts synchronously — ≤100ms rule
   }
-  if (lastSelectTarget && now - lastSelectAt < 2000) {
-    const kind = lastSelectTarget.userData.kind;
-    if (kind === 'sphere') {           // lamp-ignite reaction
-      sfxIgnite();
-      sphereMesh.material.color.setHex(0xffc861);
-      sphereMesh.material.emissive.setHex(0xcc7a1a);
-      setTimeout(() => { sphereMesh.material.color.setHex(0x66aaff); sphereMesh.material.emissive.setHex(0x1a3a66); }, 600);
-      pulse(sphereGroup, 1.25);
-    } else if (kind === 'portal') {   // portal swirl reaction
-      sfxPortal();
-      pulse(portalGroup, 1.15);
-    }
-    lastSelectTarget = null;
-  }
-  s.heldSince = 0;
-}
-function pulse(group, amt) {
-  const t0 = performance.now();
-  (function tick() {
-    const k = (performance.now() - t0) / 350;
-    if (k >= 1) { group.scale.setScalar(1); return; }
-    group.scale.setScalar(1 + (amt-1) * Math.sin(k * Math.PI));
-    requestAnimationFrame(tick);
-  })();
 }
 
-/* ---- manual pinch distance: progress-ring feedback ONLY ---- */
-const NEG_Z = new THREE.Vector3(0, 0, -1);
-function rayDirFrom(controller, out) {
+function rayDir(controller, out) {
   controller.getWorldQuaternion(tmpQ);
-  return out.copy(NEG_Z).applyQuaternion(tmpQ); // target ray points along -Z
+  return out.copy(NEG_Z).applyQuaternion(tmpQ);
 }
+
+/* ---- manual pinch distance: progress-ring ONLY ---- */
 function pinchDistMm(s) {
   if (!s.hand || !s.handObj.joints) return -1;
   const a = s.handObj.joints['index-finger-tip'], b = s.handObj.joints['thumb-tip'];
@@ -348,103 +306,118 @@ function pinchDistMm(s) {
   a.getWorldPosition(tmpV1); b.getWorldPosition(tmpV2);
   return tmpV1.distanceTo(tmpV2) * 1000;
 }
-function updatePinchDetector(s, now) {
+function updatePinchRing(s, now) {
   const d = pinchDistMm(s);
-  if (d < 0) return;
-  // silent calibration: median relaxed distance over first 2s of tracking
-  if (!s.calibrated && s.dRelaxed.length < 120) s.dRelaxed.push(d);
-  const on = s.pinchOnMm, off = Math.max(on + 10, T.PINCH_OFF_MM);
-  const target = s.pinch ? d < off : d < on;
+  if (d < 0 || !marker.visible) { if (progShown !== 0 && !anyHover()) setProg(0); return; }
+  const target = s.pinch ? d < T.PINCH_OFF_MM : d < T.PINCH_ON_MM;
   if (target !== s.pendingPinch) { s.pendingPinch = target; s.pendingSince = now; }
   if (s.pendingPinch !== s.pinch && now - s.pendingSince > T.DEBOUNCE_MS) s.pinch = s.pendingPinch;
-  // ring fill: starts at 9cm, full at engage threshold — only over the sphere
-  const prog = 1 - Math.min(1, Math.max(0, (d - on) / (T.RING_FILL_START_MM - on)));
-  const overSphere = s.hover && s.hover.userData.kind === 'sphere';
-  if (overSphere) {
-    ringMesh.position.copy(sphereGroup.position);
-    ringMesh.quaternion.copy(camera.quaternion);
-    setRing(d < T.RING_FILL_START_MM ? prog : 0);
-  } else if (ringProgressShown !== 0 && !anyHoverSphere()) {
-    setRing(0);
-  }
+  if (s.hover) {
+    const prog = 1 - Math.min(1, Math.max(0, (d - T.PINCH_ON_MM) / (T.RING_FILL_START_MM - T.PINCH_ON_MM)));
+    progRing.position.copy(marker.position);
+    progRing.quaternion.copy(camera.quaternion);
+    setProg(d < T.RING_FILL_START_MM ? prog : 0);
+  } else if (progShown !== 0 && !anyHover()) setProg(0);
 }
-function anyHoverSphere() { return hands.some(s => s && s.hover && s.hover.userData.kind === 'sphere'); }
+function anyHover() { return hands.some(s => s && s.hover); }
 
-/* ---- hover via raycast (frozen ray respected) ---- */
-const hitMeshes = [];
+/* ---- hover via raycast ---- */
+const raycaster = new THREE.Raycaster();
 function updateHover(s, now) {
-  hitMeshes.length = 0;
-  for (const g of interactables) hitMeshes.push(g.userData.hit);
   let o, d;
-  if (s.frozenRay && now < s.frozenUntil) { o = s.frozenRay.o; d = s.frozenRay.d; }
+  if (now < s.frozenUntil) { o = s.frozenO; d = s.frozenD; }
   else {
-    s.controller.getWorldPosition(tmpV1); rayDirFrom(s.controller, tmpV2);
+    s.controller.getWorldPosition(tmpV1); rayDir(s.controller, tmpV2);
     o = tmpV1; d = tmpV2;
-    // draw the ray
     s.ray.position.copy(o);
     tmpQ.setFromUnitVectors(NEG_Z, d);
     s.ray.quaternion.copy(tmpQ);
   }
   raycaster.set(o, d); raycaster.far = 5;
-  const hits = raycaster.intersectObjects(hitMeshes, false);
-  const g = hits.length ? interactables[hitMeshes.indexOf(hits[0].object)] : null;
-  if (g !== s.hover) {
-    if (s.hover) { // un-hover: restore
-      const u = s.hover.userData;
-      u.mesh.material.emissive.setHex(s.hover.userData.kind === 'sphere' ? 0x1a3a66 : 0x0e2a4a);
-    }
-    s.hover = g;
-    if (g) { // hover beat: glow + fingertip tint cue via reticle color
-      g.userData.mesh.material.emissive.setHex(g.userData.kind === 'sphere' ? 0x3a6aaa : 0x2a5aaa);
+  const hits = raycaster.intersectObject(markerHit, false);
+  const hit = marker.visible && hits.length > 0;
+  if (hit !== s.hover) {
+    s.hover = hit;
+    if (hit) {  // hover beat: glow + reticle tint
+      markerCore.material.emissive.setHex(0xd88f1f);
       s.reticle.material.color.setHex(0xffc861);
-    } else s.reticle.material.color.setHex(0x88bbff);
+    } else {
+      markerCore.material.emissive.setHex(0xa86a12);
+      s.reticle.material.color.setHex(0x88bbff);
+    }
   }
-  if (hits.length) {
+  if (hit) {
     s.reticle.visible = true;
     s.reticle.position.copy(hits[0].point);
-    const sc = 1 + (g === s.hover ? 0.35 : 0);
-    s.reticle.scale.setScalar(sc);
+    s.reticle.scale.setScalar(1.35);
   } else s.reticle.visible = false;
 }
 
-/* ------------------------------------------------------------------
+/* ==================================================================
    Frame loop
-   ------------------------------------------------------------------ */
+   ================================================================== */
 const clock = new THREE.Clock();
 function animate() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.1);
+
+  // begin transition: fade video up from black + dissolve marker
+  if (flow === Flow.BEGINNING) {
+    const k = Math.min(1, (now - fadeT) / 900);
+    const v = 1 - k;
+    sphereMat.color.setScalar(k);              // black -> full video
+    marker.scale.setScalar(Math.max(0.001, v));
+    if (k >= 1) {
+      marker.visible = false; pulseRing.visible = false;
+      flow = Flow.PLAYING;
+      vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); });
+    }
+  }
+
+  // invitation pulse on the marker
+  if (marker.visible && (flow === Flow.IDLE || flow === Flow.ENDED)) {
+    const p = (Math.sin(now / 450) + 1) / 2;   // 0..1 gentle pulse
+    const pr = 0.028 + p * 0.010;
+    pulseRing.geometry.dispose();
+    pulseRing.geometry = new THREE.RingGeometry(pr, pr + 0.005, 48);
+    pulseRing.material.opacity = 0.35 + p * 0.45;
+    pulseRing.position.copy(marker.position);
+    pulseRing.quaternion.copy(camera.quaternion);
+    marker.position.y += Math.sin(now / 900) * 0.00012;  // gentle bob
+  }
+
+  // captions stay head-anchored
+  if (caption.visible) caption.quaternion.copy(camera.quaternion);
+
   for (const s of hands) {
     if (!s) continue;
-    // fade protocol
     if (s.fading === 'out') {
-      s.fade = Math.max(0, s.fade - dt*1000/T.HAND_FADE_MS);
+      s.fade = Math.max(0, s.fade - dt * 1000 / T.HAND_FADE_MS);
       if (s.model) s.model.visible = s.fade > 0.02;
-      if (s.fade === 0) { s.fading = 'done'; s.ray.visible = false; }
+      if (s.fade === 0) { s.fading = 'done'; s.ray.visible = false; s.reticle.visible = false; }
     } else if (s.fading === 'in') {
-      s.fade = Math.min(1, s.fade + dt*1000/T.HAND_FADE_MS);
+      s.fade = Math.min(1, s.fade + dt * 1000 / T.HAND_FADE_MS);
       if (s.model) s.model.visible = true;
-      // reacquisition smoothing: lerp from last-known pose over ~120ms
-      const k = Math.min(1, (now - s.reacquireT) / T.REACQUIRE_LERP_MS);
-      if (s.model && k < 1 && s.controller) { /* model follows controller; smoothing inherent */ }
       if (s.fade === 1) { s.fading = 'none'; s.ray.visible = true; }
     }
     if (s.model) s.model.traverse(o => { if (o.material) { o.material.transparent = true; o.material.opacity = s.fade; } });
-    if (s.hand && s.fade > 0.5) { updatePinchDetector(s, now); updateHover(s, now); }
+    if (s.hand && s.fade > 0.5 && renderer.xr.isPresenting) {
+      updatePinchRing(s, now);
+      updateHover(s, now);
+    }
   }
   renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(animate);
 
-/* ------------------------------------------------------------------
+/* ==================================================================
    Session bootstrap / desktop fallback
-   ------------------------------------------------------------------ */
+   ================================================================== */
 const overlay = document.getElementById('overlay');
 const enterBtn = document.getElementById('enter');
 const xrmsg = document.getElementById('xrmessage');
-const hudDiv = document.getElementById('hud');
-
-function log(m) { hudDiv.style.display = 'block'; hudDiv.innerHTML += m + '<br>'; }
+const dbgDiv = document.getElementById('dbg');
+function dbg(m) { dbgDiv.style.display = 'block'; dbgDiv.innerHTML += m + '<br>'; }
 
 hands[0] = makeHandSlot(0); hands[1] = makeHandSlot(1);
 
@@ -458,42 +431,42 @@ if ('xr' in navigator) {
 } else xrmsg.textContent = 'WebXR not available. Open this page in the Quest Browser.';
 
 enterBtn.addEventListener('click', async () => {
-  audio(); // unlock AudioContext on gesture
+  audio();
   try {
     const session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['hand-tracking', 'local-floor']
     });
-    renderer.xr.setSession(session);
+    await renderer.xr.setSession(session);
     overlay.style.display = 'none';
-    drawHud();
-    // place targets on the first presenting frame, when the headset pose is real
     const waitForPose = setInterval(() => {
-      if (renderer.xr.isPresenting) { clearInterval(waitForPose); placeTargets(); placeHud(); }
+      if (renderer.xr.isPresenting) {
+        clearInterval(waitForPose);
+        placeMarker(); placeCaption();
+        setCaption('You\u2019ve arrived. Pinch the glowing marker.');
+      }
     }, 100);
-    setTimeout(() => clearInterval(waitForPose), 5000); // safety
-    session.addEventListener('end', () => { overlay.style.display = 'flex'; });
-    log('session started — pinch the blue sphere');
+    setTimeout(() => clearInterval(waitForPose), 5000);
+    session.addEventListener('end', () => {
+      overlay.style.display = 'flex';
+      try { vid.pause(); } catch (e) {}
+      flow = Flow.IDLE; sphereMat.color.setHex(0x000000);
+    });
+    dbg('session started');
   } catch (e) { xrmsg.textContent = 'Session failed: ' + e.message; }
 });
 
-/* Desktop fallback: mouse click = pinch (for layout iteration only — never for feel sign-off) */
-let mouseDown = false;
+/* Desktop fallback: mouse click = pinch (layout iteration only) */
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (renderer.xr.isPresenting) return;
-  mouseDown = true;
-  tmpV1.set((e.clientX/innerWidth)*2-1, -(e.clientY/innerHeight)*2+1, 0.5).unproject(camera);
-  raycaster.set(camera.position, tmpV1.sub(camera.position).normalize()); raycaster.far = 6;
-  const hits = raycaster.intersectObjects(interactables.map(g => g.userData.hit), false);
-  if (hits.length) {
-    const g = interactables[interactables.map(x=>x.userData.hit).indexOf(hits[0].object)];
-    pinchCount++; drawHud(); sfxClick();
-    const kind = g.userData.kind;
-    if (kind === 'sphere') { sfxIgnite(); pulse(g, 1.25); }
-    else { sfxPortal(); pulse(g, 1.15); }
-  } else { missCount++; drawHud(); }
+  if (flow === Flow.BEGINNING || flow === Flow.PLAYING) return;
+  tmpV3.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1, 0.5).unproject(camera);
+  raycaster.set(camera.position, tmpV3.sub(camera.position).normalize()); raycaster.far = 6;
+  if (marker.visible && raycaster.intersectObject(markerHit, false).length > 0) {
+    sfxClick(); beginWalk();
+  }
 });
 addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
 </script>
