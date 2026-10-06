@@ -143,6 +143,20 @@ function playNarr(name, onDone) {
 }
 function narrLater(ms, fn) { narrTimer = setTimeout(fn, ms); }
 
+/* Music bed — "Almost in F" by Kevin MacLeod (CC BY 4.0), looped low under narration. */
+const musicBed = new Audio('audio/music_bed.mp3');
+musicBed.loop = true;
+musicBed.volume = 0.14;
+musicBed.preload = 'auto';
+function startMusic() {
+  try {
+    musicBed.currentTime = 0;
+    const p = musicBed.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) {}
+}
+function stopMusic() { try { musicBed.pause(); } catch (e) {} }
+
 /* ==================================================================
    Caption line — head-anchored, non-interactive, 1.2m
    ================================================================== */
@@ -515,6 +529,7 @@ function resetScene() {
   setCaption('Pinch to open your eyes.');
   placeCaption();
   placeEyeMarker();
+  startMusic();
   playNarr('a1');
 }
 
@@ -665,6 +680,7 @@ enterBtn.addEventListener('click', async () => {
     session.addEventListener('end', () => {
       overlay.style.display = 'flex';
       stopNarr();
+      stopMusic();
       try { vid.pause(); } catch (e) {}
       flow = Flow.DARK; sphereMat.color.setHex(0x000000);
     });

@@ -1,0 +1,30 @@
+Background-music candidates for Sherpa VR Scene 1 ("First Light").
+All three: 90 seconds, MP3 128k, loudness-normalized to -20 LUFS integrated,
+3s fade in / 3s fade out. Intended as a quiet bed under the guide voiceover.
+
+(a) music_a_almost_in_f.mp3
+    Title: "Almost in F"
+    Artist: Kevin MacLeod (incompetech.com)
+    Source: https://archive.org/details/Incompetech
+    Direct file: https://archive.org/download/Incompetech/mp3-royaltyfree/Almost%20in%20F.mp3
+    License: Creative Commons Attribution (CC BY) — free for commercial use
+             with attribution. Credit: "Almost in F by Kevin MacLeod".
+             License details: https://incompetech.com/music/royalty-free/licenses/
+    Note: 90s excerpt (0:30-2:00) from the archive copy.
+
+(b) music_b_airship_serenity.mp3
+    Title: "Airship Serenity"
+    Artist: Kevin MacLeod (incompetech.com)
+    Source: https://archive.org/details/Incompetech
+    Direct file: https://archive.org/download/Incompetech/mp3-royaltyfree/Airship%20Serenity.mp3
+    License: Creative Commons Attribution (CC BY) — free for commercial use
+             with attribution. Credit: "Airship Serenity by Kevin MacLeod".
+             License details: https://incompetech.com/music/royalty-free/licenses/
+    Note: 90s excerpt (0:30-2:00).
+
+(c) music_c_tanpura_drone.mp3
+    Title: "Tanpura drone" (synthesized for this project)
+    Artist: n/a — generated with ffmpeg, original work, no license needed.
+    Recipe: sine 110 Hz (A2) + sine 164.81 Hz (E3, fifth), slow 0.1 Hz
+            amplitude LFO, soft lowpassed brown-noise "wind" bed, 90s.
+    Note: perfectly steady by construction — no surprises, sits under speech.
