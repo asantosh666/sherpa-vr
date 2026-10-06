@@ -2,22 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Sherpa — Scene 1: Arrival</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sherpa — Scene 1: First Light</title>
 <style>
-  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000;
-               font-family: system-ui, -apple-system, sans-serif; color:#eee; }
-  #overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-             justify-content:center; text-align:center; padding:24px; z-index:10; background:#0b0d10; }
-  #overlay h1 { font-size:28px; margin:0 0 12px; font-weight:600; }
-  #overlay p { max-width:520px; line-height:1.5; color:#bbb; }
-  #enter { margin-top:20px; padding:16px 48px; font-size:20px; border:none; border-radius:12px;
-           background:#c8862a; color:#fff; cursor:pointer; }
-  #enter:disabled { background:#555; cursor:default; }
-  #dbg { position:absolute; top:12px; left:12px; font-size:13px; color:#888; z-index:5;
-         background:rgba(0,0,0,.45); padding:8px 12px; border-radius:8px; display:none;
-         max-width:60ch; }
-  canvas { display:block; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000;
+               font-family: system-ui, -apple-system, sans-serif; color: #eee; }
+  canvas { display: block; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; gap: 14px;
+             background: radial-gradient(ellipse at center, #101418 0%, #05070a 70%);
+             z-index: 10; text-align: center; padding: 24px; }
+  #overlay h1 { font-size: 26px; margin: 0; letter-spacing: 2px; font-weight: 600; }
+  #overlay p { font-size: 14px; opacity: 0.75; max-width: 420px; line-height: 1.5; margin: 0; }
+  #enter { font-size: 17px; padding: 13px 34px; border-radius: 999px; border: 1px solid #c8a24a;
+           background: #1a1408; color: #f5d98b; cursor: pointer; }
+  #enter:disabled { opacity: 0.35; cursor: default; }
+  #xrmessage { font-size: 12px; opacity: 0.55; }
+  #dbg { position: fixed; left: 8px; top: 8px; font-size: 11px; opacity: 0.8;
+         display: none; z-index: 20; max-width: 70vw; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -28,33 +30,37 @@
 </head>
 <body>
 <div id="overlay">
-  <h1>Sherpa — Scene 1: Arrival</h1>
-  <p>A highland plain in Nepal. Travelers approach on the trail.<br>
-     Put on the Quest, enter VR, and pinch the glowing trail marker.<br>
-     <span id="xrmessage">Checking WebXR support…</span></p>
+  <h1>SHERPA &mdash; FIRST LIGHT</h1>
+  <p>A voice-led moment. You enter in darkness; your sherpa greets you.
+     Pinch to open your eyes, look around the Terai at golden hour,
+     and light a lamp for safe passage.</p>
   <button id="enter" disabled>Enter VR</button>
+  <div id="xrmessage">checking WebXR&hellip;</div>
 </div>
 <div id="dbg"></div>
-
 <script type="module">
 import * as THREE from 'three';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
 /* ==================================================================
-   Tunables — from sherpa/hand-feel-polish-guide.md
-   - Pinch SELECT: runtime selectstart/selectend ONLY (OS-tuned).
-   - Manual joint-distance math: progress-ring feedback ONLY.
+   Sherpa — Scene 1: "First Light" (fresh build, 2026-10-06)
+   Arc: DARK -> FADEUP -> VISTA -> LAMP -> IGNITE -> END
+   Hand rules (from hand-feel-polish-guide.md):
+   - runtime selectstart/selectend = the click; manual pinch-distance
+     (25mm engage / 35mm release hysteresis + 90ms debounce) drives rings ONLY
+   - targets >= 22mm, three-beat feedback, first pinch <= 10s
+   - NEVER palm pinch (system-reserved on both hands)
    ================================================================== */
 const T = {
-  PINCH_ON_MM: 25, PINCH_OFF_MM: 35,   // hysteresis band, manual detector
-  DEBOUNCE_MS: 90,                     // reading must persist this long
-  RING_FILL_START_MM: 90,              // ring starts filling at 9cm
-  MARKER_DIST_M: 0.45,                 // poke range, dead-center, slightly low
-  MARKER_VIS_R: 0.015, MARKER_HIT_R: 0.030,  // visual < collider (4-6dp padding rule)
-  RAY_FREEZE_MS: 120,                  // freeze ray after selectstart (pinch jitter)
+  PINCH_ON_MM: 25, PINCH_OFF_MM: 35, DEBOUNCE_MS: 90,
+  RING_FILL_START_MM: 60,
+  RAY_FREEZE_MS: 120, DOUBLE_FIRE_GUARD_MS: 150,
   HAND_FADE_MS: 180,
-  DOUBLE_FIRE_GUARD_MS: 150,
   CAPTION_DIST_M: 1.2,
+  REACH_M: 0.45,
+  FADEUP_MS: 1200,
+  HOLD_S: 1.5,
+  YAW_F: 0.55,            // texel u of the sunset road in the equirect
 };
 
 /* ==================================================================
@@ -70,32 +76,30 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 60);
-
-// Soft ambient so hand meshes read against the video sphere
 scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x20242a, 0.7));
 
 /* ==================================================================
-   360 video sphere (equirectangular)
+   360 vista sphere (equirectangular). Starts black; yaw offset centers
+   the sunset road (texel u=YAW_F) on the user's initial forward (-Z,
+   which three.js SphereGeometry maps to texture u=0.75).
    ================================================================== */
 const vid = document.createElement('video');
-vid.src = 'scene1-044-360.mp4';
+vid.src = 'scene1-vista-360.mp4';
 vid.preload = 'auto';
 vid.playsInline = true;
-vid.loop = false;
+vid.loop = true;
 
 const vidTex = new THREE.VideoTexture(vid);
 vidTex.colorSpace = THREE.SRGBColorSpace;
-// Yaw-align: travelers sit at u≈0.616 in the equirect; three.js maps world -Z
-// to u=0.75, so offset.x = 0.616-0.75 centers the action on initial forward.
 vidTex.wrapS = THREE.RepeatWrapping;
-vidTex.offset.x = -0.134;
+vidTex.offset.x = T.YAW_F - 0.75;   // -0.20
 const sphereMat = new THREE.MeshBasicMaterial({ map: vidTex, side: THREE.BackSide });
-sphereMat.color.setHex(0x000000);   // start black; fades up on "begin"
+sphereMat.color.setHex(0x000000);    // darkness until "open your eyes"
 const videoSphere = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48), sphereMat);
 scene.add(videoSphere);
 
 /* ==================================================================
-   Audio — tiny synth for UI feedback (video carries its own ambience)
+   Audio — synth chimes + pre-recorded sherpa narration
    ================================================================== */
 let AC = null;
 function audio() { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); return AC; }
@@ -109,48 +113,35 @@ function blip(freq, durMs, type = 'triangle', gain = 0.25, when = 0) {
     o.connect(g).connect(ac.destination); o.start(t); o.stop(t + durMs / 1000 + 0.02);
   } catch (e) {}
 }
-const sfxClick = () => blip(660, 80, 'triangle', 0.28);                       // commit
-const sfxBegin = () => { blip(392, 200, 'sine', 0.20); blip(523, 260, 'sine', 0.18, 110); blip(659, 340, 'sine', 0.14, 220); }; // arrival chime
+const sfxClick  = () => blip(660, 80, 'triangle', 0.28);
+const sfxTick   = () => blip(520, 60, 'sine', 0.18);
+const sfxOpen   = () => { blip(392, 220, 'sine', 0.20); blip(523, 300, 'sine', 0.16, 120); blip(659, 380, 'sine', 0.12, 240); };
+const sfxIgnite = () => { blip(523, 180, 'sine', 0.22); blip(659, 220, 'sine', 0.20, 110); blip(784, 320, 'sine', 0.18, 220); blip(1046, 420, 'sine', 0.12, 330); };
 
-/* ==================================================================
-   Trail marker — the ONE interactive beat of Scene 1
-   ================================================================== */
-const marker = new THREE.Group();
-const markerCore = new THREE.Mesh(
-  new THREE.SphereGeometry(T.MARKER_VIS_R, 24, 16),
-  new THREE.MeshStandardMaterial({ color: 0xffc861, emissive: 0xa86a12, roughness: 0.4 })
-);
-const markerHit = new THREE.Mesh(
-  new THREE.SphereGeometry(T.MARKER_HIT_R, 12, 8),
-  new THREE.MeshBasicMaterial({ visible: false })
-);
-marker.add(markerCore, markerHit);
-marker.userData.hit = markerHit;
-scene.add(marker);
-
-// Invitation pulse ring around the marker
-const pulseRing = new THREE.Mesh(
-  new THREE.RingGeometry(0.028, 0.033, 48),
-  new THREE.MeshBasicMaterial({ color: 0xffc861, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
-);
-scene.add(pulseRing);
-
-// Pinch-progress ring (manual detector drives this; runtime events do the click)
-const progRing = new THREE.Mesh(
-  new THREE.RingGeometry(0.040, 0.047, 48),
-  new THREE.MeshBasicMaterial({ color: 0xffe1a1, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
-);
-progRing.visible = false;
-scene.add(progRing);
-let progShown = -1;
-function setProg(p) {
-  const q = Math.round(p * 40) / 40;
-  if (q === progShown) return;
-  progShown = q;
-  progRing.visible = q > 0.01;
-  progRing.geometry.dispose();
-  progRing.geometry = new THREE.RingGeometry(0.040, 0.047, 48, 1, Math.PI / 2, Math.max(0.001, q * Math.PI * 2));
+/* Narration: one MP3 per beat, chained defensively (a failure skips ahead). */
+const NARR = {};
+for (const n of ['a1','a2','a3','a4','a5','a6']) {
+  const el = new Audio('audio/' + n + '.mp3');
+  el.preload = 'auto';
+  NARR[n] = el;
 }
+let narrTimer = 0;
+function stopNarr() {
+  for (const k in NARR) { try { NARR[k].pause(); } catch (e) {} }
+  if (narrTimer) { clearTimeout(narrTimer); narrTimer = 0; }
+}
+function playNarr(name, onDone) {
+  stopNarr();
+  const el = NARR[name];
+  const done = () => { el.onended = el.onerror = null; if (onDone) onDone(); };
+  try {
+    el.onended = done; el.onerror = done;
+    el.currentTime = 0;
+    const p = el.play();
+    if (p && p.catch) p.catch(() => done());
+  } catch (e) { done(); }
+}
+function narrLater(ms, fn) { narrTimer = setTimeout(fn, ms); }
 
 /* ==================================================================
    Caption line — head-anchored, non-interactive, 1.2m
@@ -172,49 +163,137 @@ function setCaption(text) {
   c.fillText(text, 512, 64);
   capTex.needsUpdate = true;
 }
-function placeCaption() {
+function placeCaption(dy = -0.28) {
   const p = new THREE.Vector3(), q = new THREE.Quaternion();
   camera.getWorldPosition(p); camera.getWorldQuaternion(q);
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
   caption.position.copy(p).addScaledVector(fwd, T.CAPTION_DIST_M);
-  caption.position.y = p.y - 0.28;   // lower third — out of the sightline, readable
+  caption.position.y = p.y + dy;
   caption.quaternion.copy(q);
   caption.visible = true;
 }
 
 /* ==================================================================
-   Scene flow: IDLE -> BEGINNING -> PLAYING -> ENDED(replay)
+   "Open your eyes" marker — glowing sphere in the dark (reused for replay)
    ================================================================== */
-const Flow = { IDLE: 0, BEGINNING: 1, PLAYING: 2, ENDED: 3 };
-let flow = Flow.IDLE;
-let fadeT = 0;
+const eye = new THREE.Group();
+const eyeCore = new THREE.Mesh(
+  new THREE.SphereGeometry(0.020, 24, 16),          // 20mm visual
+  new THREE.MeshStandardMaterial({ color: 0xffe6b0, emissive: 0xc98f1f, roughness: 0.4 })
+);
+const eyeHit = new THREE.Mesh(
+  new THREE.SphereGeometry(0.030, 12, 8),           // 30mm collider (>=22mm rule)
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+eye.add(eyeCore, eyeHit);
+eye.visible = false;
+scene.add(eye);
 
-function placeMarker() {
+const pulseRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.028, 0.033, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffe6b0, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+);
+pulseRing.visible = false;
+scene.add(pulseRing);
+
+// Pinch-progress ring (manual detector drives this; runtime events do the click)
+const progRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.040, 0.047, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffe1a1, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+);
+progRing.visible = false;
+scene.add(progRing);
+let progShown = -1;
+function setProg(p) {
+  const q = Math.round(p * 40) / 40;
+  if (q === progShown) return;
+  progShown = q;
+  progRing.visible = q > 0.01;
+  progRing.geometry.dispose();
+  progRing.geometry = new THREE.RingGeometry(0.040, 0.047, 48, 1, Math.PI / 2, Math.max(0.001, q * Math.PI * 2));
+}
+function placeEyeMarker() {
   const p = new THREE.Vector3(), q = new THREE.Quaternion();
   camera.getWorldPosition(p); camera.getWorldQuaternion(q);
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
-  marker.position.copy(p).addScaledVector(fwd, T.MARKER_DIST_M);
-  marker.position.y = p.y - 0.10;    // slightly below eye level, lower = less fatigue
-  marker.visible = true;
-  marker.scale.setScalar(1);
-  markerCore.material.emissive.setHex(0xa86a12);
+  eye.position.copy(p).addScaledVector(fwd, T.REACH_M);
+  eye.position.y = p.y - 0.10;
+  eye.visible = true;
+  eye.scale.setScalar(1);
+  eyeCore.material.emissive.setHex(0xc98f1f);
   pulseRing.visible = true;
 }
 
-function beginWalk() {
-  flow = Flow.BEGINNING; fadeT = performance.now();
-  sfxBegin();
-  setCaption('The trail is waiting.');
-  // marker dissolves as the world fades up
-  pulseRing.visible = false; setProg(0);
+/* ==================================================================
+   The butter lamp — the one ritual interaction
+   ================================================================== */
+const lamp = new THREE.Group();
+const brassMat = new THREE.MeshStandardMaterial({ color: 0x9a7434, metalness: 0.85, roughness: 0.35 });
+const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.022, 0.030, 24), brassMat);
+bowl.position.y = -0.015;
+const rim = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.006, 12, 32), brassMat);
+rim.rotation.x = Math.PI / 2;
+const flameMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, emissive: 0x000000, roughness: 0.6 });
+const flame = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.035, 16), flameMat);
+flame.position.y = 0.030;
+// soft glow sprite (revealed on ignite)
+const glowCanvas = document.createElement('canvas'); glowCanvas.width = glowCanvas.height = 128;
+{
+  const g = glowCanvas.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 2, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(255,190,110,0.95)');
+  grad.addColorStop(0.4, 'rgba(255,150,60,0.45)');
+  grad.addColorStop(1, 'rgba(255,130,40,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
 }
+const glowTex = new THREE.CanvasTexture(glowCanvas);
+const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, transparent: true, opacity: 0, depthWrite: false,
+  blending: THREE.AdditiveBlending
+}));
+glow.scale.setScalar(0.22);
+glow.position.y = 0.035;
+const lampLight = new THREE.PointLight(0xffa040, 0, 6, 2);  // warm bloom, off until lit
+lampLight.position.y = 0.06;
+const lampHit = new THREE.Mesh(
+  new THREE.SphereGeometry(0.035, 12, 8),           // 35mm collider
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+lampHit.position.y = 0.01;
+lamp.add(bowl, rim, flame, glow, lampLight, lampHit);
+lamp.visible = false;
+scene.add(lamp);
 
-vid.addEventListener('ended', () => {
-  if (flow !== Flow.PLAYING) return;
-  flow = Flow.ENDED;
-  setCaption('Walk it again — pinch the marker.');
-  placeMarker();
-});
+let lampLit = false, igniteT = 0;
+function placeLamp() {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion();
+  camera.getWorldPosition(p); camera.getWorldQuaternion(q);
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0; fwd.normalize();
+  lamp.position.copy(p).addScaledVector(fwd, T.REACH_M);
+  lamp.position.y = p.y - 0.08;
+  lamp.quaternion.copy(q);
+  lamp.visible = true;
+  lamp.scale.setScalar(0.001);   // grows in
+}
+function igniteVisual(now) {
+  const k = Math.min(1, (now - igniteT) / 1200);
+  const ease = 1 - Math.pow(1 - k, 3);
+  lampLight.intensity = 2.4 * ease;
+  glow.material.opacity = 0.9 * ease * (0.92 + 0.08 * Math.sin(now / 160));  // living flicker
+  flameMat.emissive.setHex(0xff7722);
+  flameMat.emissiveIntensity = 2.2 * ease;
+  flameMat.color.setHex(0xffd9a0);
+  flame.scale.set(1 + 0.15 * ease, 1 + 0.35 * ease, 1 + 0.15 * ease);
+}
+function resetLamp() {
+  lampLit = false;
+  lampLight.intensity = 0;
+  glow.material.opacity = 0;
+  flameMat.emissive.setHex(0x000000);
+  flameMat.emissiveIntensity = 0;
+  flameMat.color.setHex(0x2b2b2b);
+  flame.scale.setScalar(1);
+}
 
 /* ==================================================================
    Hands — models, rays, reticle, fade protocol
@@ -238,7 +317,7 @@ function makeHandSlot(i) {
       new THREE.SphereGeometry(0.008, 12, 8),
       new THREE.MeshBasicMaterial({ color: 0x88bbff })
     ),
-    hover: false,
+    hoverTarget: null,          // 'eye' | 'lamp' | null
     frozenO: new THREE.Vector3(), frozenD: new THREE.Vector3(), frozenUntil: 0,
     pinch: false, pendingPinch: false, pendingSince: 0,
     fade: 1, fading: 'none',
@@ -266,34 +345,37 @@ function onConnected(i, e) {
 }
 function onDisconnected(i) {
   const s = hands[i]; if (!s) return;
-  s.fading = 'out'; s.hover = false;   // fade protocol; world keeps running
-  markerCore.position.z = 0;
-  dbg(`hand disconnected: ${s.handedness}`);
+  s.fading = 'out'; s.hoverTarget = null;
 }
 
 /* ---- discrete selection: runtime events ONLY ---- */
 let lastSelectAt = 0;
+function activeHit() {
+  if (flow === Flow.DARK && eye.visible) return { mesh: eyeHit, name: 'eye' };
+  if (flow === Flow.END && eye.visible) return { mesh: eyeHit, name: 'eye' };
+  return null;   // lamp uses continuous hold, not discrete select
+}
 function onSelectStart(i) {
-  const s = hands[i]; if (!s || flow === Flow.BEGINNING || flow === Flow.PLAYING) return;
+  const s = hands[i]; if (!s) return;
+  if (flow !== Flow.DARK && flow !== Flow.END) return;
   const now = performance.now();
-  if (s.hover && marker.visible && now - lastSelectAt > T.DOUBLE_FIRE_GUARD_MS) {
+  if (s.hoverTarget === 'eye' && eye.visible && now - lastSelectAt > T.DOUBLE_FIRE_GUARD_MS) {
     lastSelectAt = now;
     sfxClick();
-    // freeze ray origin so the pinch motion can't yank aim (guide §6.1)
     s.controller.getWorldPosition(s.frozenO); rayDir(s.controller, s.frozenD);
     s.frozenUntil = now + T.RAY_FREEZE_MS;
-    // press beat: 7mm travel + color shift
-    markerCore.position.z -= 0.007;
-    markerCore.material.emissive.setHex(0xe09a2a);
+    eyeCore.position.z -= 0.007;                       // press beat: 7mm travel
+    eyeCore.material.emissive.setHex(0xe8b04a);
   }
 }
 function onSelectEnd(i) {
   const s = hands[i]; if (!s) return;
-  markerCore.position.z = 0;
-  if (lastSelectAt && performance.now() - lastSelectAt < 2000 && marker.visible &&
-      (flow === Flow.IDLE || flow === Flow.ENDED)) {
+  eyeCore.position.z = 0;
+  if (lastSelectAt && performance.now() - lastSelectAt < 2000 && eye.visible &&
+      (flow === Flow.DARK || flow === Flow.END)) {
     lastSelectAt = 0;
-    beginWalk();   // release beat starts synchronously — ≤100ms rule
+    if (flow === Flow.DARK) openEyes();
+    else resetScene();
   }
 }
 
@@ -302,7 +384,7 @@ function rayDir(controller, out) {
   return out.copy(NEG_Z).applyQuaternion(tmpQ);
 }
 
-/* ---- manual pinch distance: progress-ring ONLY ---- */
+/* ---- manual pinch distance: rings ONLY (validated 25/35mm + 90ms) ---- */
 function pinchDistMm(s) {
   if (!s.hand || !s.handObj.joints) return -1;
   const a = s.handObj.joints['index-finger-tip'], b = s.handObj.joints['thumb-tip'];
@@ -310,22 +392,15 @@ function pinchDistMm(s) {
   a.getWorldPosition(tmpV1); b.getWorldPosition(tmpV2);
   return tmpV1.distanceTo(tmpV2) * 1000;
 }
-function updatePinchRing(s, now) {
+function updatePinch(s, now) {
   const d = pinchDistMm(s);
-  if (d < 0 || !marker.visible) { if (progShown !== 0 && !anyHover()) setProg(0); return; }
+  if (d < 0) return;
   const target = s.pinch ? d < T.PINCH_OFF_MM : d < T.PINCH_ON_MM;
   if (target !== s.pendingPinch) { s.pendingPinch = target; s.pendingSince = now; }
   if (s.pendingPinch !== s.pinch && now - s.pendingSince > T.DEBOUNCE_MS) s.pinch = s.pendingPinch;
-  if (s.hover) {
-    const prog = 1 - Math.min(1, Math.max(0, (d - T.PINCH_ON_MM) / (T.RING_FILL_START_MM - T.PINCH_ON_MM)));
-    progRing.position.copy(marker.position);
-    progRing.quaternion.copy(camera.quaternion);
-    setProg(d < T.RING_FILL_START_MM ? prog : 0);
-  } else if (progShown !== 0 && !anyHover()) setProg(0);
 }
-function anyHover() { return hands.some(s => s && s.hover); }
 
-/* ---- hover via raycast ---- */
+/* ---- hover via raycast against the active target ---- */
 const raycaster = new THREE.Raycaster();
 function updateHover(s, now) {
   let o, d;
@@ -337,24 +412,110 @@ function updateHover(s, now) {
     tmpQ.setFromUnitVectors(NEG_Z, d);
     s.ray.quaternion.copy(tmpQ);
   }
+  const hit0 = activeHit();
+  const lampActive = flow === Flow.LAMP && lamp.visible && !lampLit;
   raycaster.set(o, d); raycaster.far = 5;
-  const hits = raycaster.intersectObject(markerHit, false);
-  const hit = marker.visible && hits.length > 0;
-  if (hit !== s.hover) {
-    s.hover = hit;
-    if (hit) {  // hover beat: glow + reticle tint
-      markerCore.material.emissive.setHex(0xd88f1f);
-      s.reticle.material.color.setHex(0xffc861);
-    } else {
-      markerCore.material.emissive.setHex(0xa86a12);
-      s.reticle.material.color.setHex(0x88bbff);
-    }
+  let target = null;
+  if (hit0) {
+    const hits = raycaster.intersectObject(hit0.mesh, false);
+    if (hits.length > 0) target = { name: hit0.name, point: hits[0].point };
   }
-  if (hit) {
+  if (!target && lampActive) {
+    const hits = raycaster.intersectObject(lampHit, false);
+    if (hits.length > 0) target = { name: 'lamp', point: hits[0].point };
+  }
+  const name = target ? target.name : null;
+  if (name !== s.hoverTarget) {
+    s.hoverTarget = name;
+    // hover beat: glow + reticle tint
+    if (name === 'eye') { eyeCore.material.emissive.setHex(0xe8b04a); s.reticle.material.color.setHex(0xffc861); }
+    else eyeCore.material.emissive.setHex(0xc98f1f);
+    if (name === 'lamp') { flameMat.emissive.setHex(0x331a08); s.reticle.material.color.setHex(0xffb35c); }
+    else if (!lampLit) flameMat.emissive.setHex(0x000000);
+    if (!name) s.reticle.material.color.setHex(0x88bbff);
+  }
+  if (target) {
     s.reticle.visible = true;
-    s.reticle.position.copy(hits[0].point);
+    s.reticle.position.copy(target.point);
     s.reticle.scale.setScalar(1.35);
   } else s.reticle.visible = false;
+}
+function anyHoverLamp() { return hands.some(s => s && s.hoverTarget === 'lamp'); }
+function anyHoverEye() { return hands.some(s => s && s.hoverTarget === 'eye'); }
+
+/* ---- desktop fallback: mouse click = pinch, press-hold = lamp hold ---- */
+let desktopHold = false;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (renderer.xr.isPresenting) return;
+  tmpV3.set((e.clientX / innerWidth) * 2 - 1, -((e.clientY / innerHeight) * 2 - 1), 0.5).unproject(camera);
+  raycaster.set(camera.position, tmpV3.sub(camera.position).normalize()); raycaster.far = 6;
+  if ((flow === Flow.DARK || flow === Flow.END) && eye.visible &&
+      raycaster.intersectObject(eyeHit, false).length > 0) {
+    sfxClick();
+    if (flow === Flow.DARK) openEyes(); else resetScene();
+    return;
+  }
+  if (flow === Flow.LAMP && lamp.visible && !lampLit &&
+      raycaster.intersectObject(lampHit, false).length > 0) {
+    desktopHold = true;
+  }
+});
+addEventListener('pointerup', () => { desktopHold = false; });
+
+/* ==================================================================
+   Scene flow: DARK -> FADEUP -> VISTA -> LAMP -> IGNITE -> END
+   ================================================================== */
+const Flow = { DARK: 0, FADEUP: 1, VISTA: 2, LAMP: 3, IGNITE: 4, END: 5 };
+let flow = Flow.DARK;
+let fadeT = 0;
+let holdT = 0, holdTicked = false;
+
+function openEyes() {
+  flow = Flow.FADEUP; fadeT = performance.now();
+  sfxOpen();
+  setCaption('');
+  eye.visible = false; pulseRing.visible = false; setProg(0);
+}
+
+function showLamp() {
+  if (flow !== Flow.VISTA) return;
+  flow = Flow.LAMP;
+  resetLamp();
+  placeLamp();
+  playNarr('a4');
+}
+
+function igniteLamp() {
+  if (flow !== Flow.LAMP || lampLit) return;
+  flow = Flow.IGNITE; igniteT = performance.now();
+  lampLit = true;
+  setProg(0);
+  sfxIgnite();
+  playNarr('a5', () => narrLater(1500, showEnding));
+}
+
+function showEnding() {
+  flow = Flow.END;
+  setCaption('The trail is waiting.');
+  placeCaption();
+  playNarr('a6');
+  // replay marker (reuses the eye marker)
+  placeEyeMarker();
+}
+
+function resetScene() {
+  stopNarr();
+  flow = Flow.DARK;
+  try { vid.pause(); } catch (e) {}
+  vid.currentTime = 0;
+  sphereMat.color.setHex(0x000000);
+  lamp.visible = false;
+  resetLamp();
+  holdT = 0; setProg(0);
+  setCaption('Pinch to open your eyes.');
+  placeCaption();
+  placeEyeMarker();
+  playNarr('a1');
 }
 
 /* ==================================================================
@@ -365,29 +526,81 @@ function animate() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.1);
 
-  // begin transition: fade video up from black + dissolve marker
-  if (flow === Flow.BEGINNING) {
-    const k = Math.min(1, (now - fadeT) / 900);
-    const v = 1 - k;
-    sphereMat.color.setScalar(k);              // black -> full video
-    marker.scale.setScalar(Math.max(0.001, v));
+  // DARK -> VISTA: 1.2s fade-up from black
+  if (flow === Flow.FADEUP) {
+    const k = Math.min(1, (now - fadeT) / T.FADEUP_MS);
+    sphereMat.color.setScalar(k);
     if (k >= 1) {
-      marker.visible = false; pulseRing.visible = false;
-      flow = Flow.PLAYING;
+      flow = Flow.VISTA;
       vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); });
+      playNarr('a2', () => narrLater(2000, () => playNarr('a3', () => showLamp())));
     }
   }
 
-  // invitation pulse on the marker
-  if (marker.visible && (flow === Flow.IDLE || flow === Flow.ENDED)) {
-    const p = (Math.sin(now / 450) + 1) / 2;   // 0..1 gentle pulse
+  // invitation pulse on the eye marker
+  if (eye.visible && (flow === Flow.DARK || flow === Flow.END)) {
+    const p = (Math.sin(now / 450) + 1) / 2;
     const pr = 0.028 + p * 0.010;
     pulseRing.geometry.dispose();
     pulseRing.geometry = new THREE.RingGeometry(pr, pr + 0.005, 48);
     pulseRing.material.opacity = 0.35 + p * 0.45;
-    pulseRing.position.copy(marker.position);
+    pulseRing.position.copy(eye.position);
     pulseRing.quaternion.copy(camera.quaternion);
-    marker.position.y += Math.sin(now / 900) * 0.00012;  // gentle bob
+    eye.position.y += Math.sin(now / 900) * 0.00012;
+  }
+
+  // lamp grows in when placed
+  if (lamp.visible && lamp.scale.x < 1 && flow === Flow.LAMP) {
+    lamp.scale.setScalar(Math.min(1, lamp.scale.x + dt * 2.5));
+  }
+  // ignite bloom
+  if (lampLit && flow === Flow.IGNITE) igniteVisual(now);
+  if (lampLit && flow === Flow.END) {
+    glow.material.opacity = 0.9 * (0.92 + 0.08 * Math.sin(now / 160));  // keep flickering
+  }
+
+  // lamp hold: pinch-and-hold 1.5s (manual detector + hover)
+  if (flow === Flow.LAMP && lamp.visible && !lampLit) {
+    const holding = hands.some(s => s && s.pinch && s.hoverTarget === 'lamp') || desktopHold;
+    if (holding) {
+      if (holdT === 0) { sfxTick(); holdTicked = true; }
+      holdT += dt;
+      progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+      progRing.quaternion.copy(camera.quaternion);
+      setProg(Math.min(1, holdT / T.HOLD_S));
+      if (holdT >= T.HOLD_S) igniteLamp();
+    } else {
+      holdT = Math.max(0, holdT - dt * 2);   // forgiving decay
+      if (holdT === 0) { if (progShown !== 0 && !anyHoverLamp()) setProg(0); }
+      else {
+        progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+        progRing.quaternion.copy(camera.quaternion);
+        setProg(holdT / T.HOLD_S);
+      }
+    }
+    // hover glow (beat 1) is handled in updateHover; ring follows lamp
+    if (!holding && anyHoverLamp()) {
+      progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+      progRing.quaternion.copy(camera.quaternion);
+    }
+  }
+
+  // eye-marker proximity ring (momentary pinch affordance)
+  if ((flow === Flow.DARK || flow === Flow.END) && eye.visible) {
+    let best = -1;
+    for (const s of hands) {
+      if (!s || !s.hand) continue;
+      const d = pinchDistMm(s);
+      if (d < 0) continue;
+      if (s.hoverTarget === 'eye' && d < T.RING_FILL_START_MM) {
+        const prog = 1 - Math.min(1, Math.max(0, (d - T.PINCH_ON_MM) / (T.RING_FILL_START_MM - T.PINCH_ON_MM)));
+        if (d > best) best = d;
+        progRing.position.copy(eye.position);
+        progRing.quaternion.copy(camera.quaternion);
+        setProg(prog);
+      }
+    }
+    if (best < 0 && progShown !== 0 && !anyHoverEye()) setProg(0);
   }
 
   // captions stay head-anchored
@@ -406,7 +619,7 @@ function animate() {
     }
     if (s.model) s.model.traverse(o => { if (o.material) { o.material.transparent = true; o.material.opacity = s.fade; } });
     if (s.hand && s.fade > 0.5 && renderer.xr.isPresenting) {
-      updatePinchRing(s, now);
+      updatePinch(s, now);
       updateHover(s, now);
     }
   }
@@ -415,7 +628,7 @@ function animate() {
 renderer.setAnimationLoop(animate);
 
 /* ==================================================================
-   Session bootstrap / desktop fallback
+   Session bootstrap
    ================================================================== */
 const overlay = document.getElementById('overlay');
 const enterBtn = document.getElementById('enter');
@@ -435,40 +648,30 @@ if ('xr' in navigator) {
 } else xrmsg.textContent = 'WebXR not available. Open this page in the Quest Browser.';
 
 enterBtn.addEventListener('click', async () => {
-  audio();
+  audio();   // unlock AudioContext on user gesture
   try {
     const session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['hand-tracking', 'local-floor']
     });
-    await renderer.xr.setSession(session);
+    renderer.xr.setSession(session);
     overlay.style.display = 'none';
     const waitForPose = setInterval(() => {
       if (renderer.xr.isPresenting) {
         clearInterval(waitForPose);
-        placeMarker(); placeCaption();
-        setCaption('You\u2019ve arrived. Pinch the glowing marker.');
+        resetScene();   // DARK + a1 + "Pinch to open your eyes."
       }
     }, 100);
     setTimeout(() => clearInterval(waitForPose), 5000);
     session.addEventListener('end', () => {
       overlay.style.display = 'flex';
+      stopNarr();
       try { vid.pause(); } catch (e) {}
-      flow = Flow.IDLE; sphereMat.color.setHex(0x000000);
+      flow = Flow.DARK; sphereMat.color.setHex(0x000000);
     });
     dbg('session started');
   } catch (e) { xrmsg.textContent = 'Session failed: ' + e.message; }
 });
 
-/* Desktop fallback: mouse click = pinch (layout iteration only) */
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (renderer.xr.isPresenting) return;
-  if (flow === Flow.BEGINNING || flow === Flow.PLAYING) return;
-  tmpV3.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1, 0.5).unproject(camera);
-  raycaster.set(camera.position, tmpV3.sub(camera.position).normalize()); raycaster.far = 6;
-  if (marker.visible && raycaster.intersectObject(markerHit, false).length > 0) {
-    sfxClick(); beginWalk();
-  }
-});
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
