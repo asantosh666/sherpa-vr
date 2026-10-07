@@ -10,10 +10,10 @@
   canvas { display: block; }
   #overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
              align-items: center; justify-content: center; gap: 14px;
-             background: radial-gradient(ellipse at center, #101418 0%, #05070a 70%);
+             background: radial-gradient(ellipse at center, #141021 0%, #05060c 70%);
              z-index: 10; text-align: center; padding: 24px; }
   #overlay h1 { font-size: 26px; margin: 0; letter-spacing: 2px; font-weight: 600; }
-  #overlay p { font-size: 14px; opacity: 0.75; max-width: 420px; line-height: 1.5; margin: 0; }
+  #overlay p { font-size: 14px; opacity: 0.75; max-width: 430px; line-height: 1.5; margin: 0; }
   #enter { font-size: 17px; padding: 13px 34px; border-radius: 999px; border: 1px solid #c8a24a;
            background: #1a1408; color: #f5d98b; cursor: pointer; }
   #enter:disabled { opacity: 0.35; cursor: default; }
@@ -31,9 +31,9 @@
 <body>
 <div id="overlay">
   <h1>SHERPA &mdash; FIRST LIGHT</h1>
-  <p>A voice-led moment. You enter in darkness; your sherpa greets you.
-     Pinch to open your eyes, look around the Terai at golden hour,
-     and light a lamp for safe passage.</p>
+  <p>A voice-led moment in a Himalayan dusk. You enter in darkness; your guide
+     greets you. Pinch to open your eyes, light a lamp for safe passage, and
+     look through glowing windows into memories of the trail.</p>
   <button id="enter" disabled>Enter VR</button>
   <div id="xrmessage">checking WebXR&hellip;</div>
 </div>
@@ -43,11 +43,12 @@ import * as THREE from 'three';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
 /* ==================================================================
-   Sherpa — Scene 1: "First Light" (fresh build, 2026-10-06)
-   Arc: DARK -> FADEUP -> VISTA -> LAMP -> IGNITE -> END
-   Hand rules (from hand-feel-polish-guide.md):
+   Sherpa — Scene 1: "First Light" v2 — procedural 3D dusk world.
+   Fresh build 2026-10-06/07. Everything is rendered geometry: crisp at
+   any distance. 360 footage appears ONLY as flat memory-portal windows.
+   Hand rules (hand-feel-polish-guide.md):
    - runtime selectstart/selectend = the click; manual pinch-distance
-     (25mm engage / 35mm release hysteresis + 90ms debounce) drives rings ONLY
+     (25mm engage / 35mm release + 90ms debounce) drives rings ONLY
    - targets >= 22mm, three-beat feedback, first pinch <= 10s
    - NEVER palm pinch (system-reserved on both hands)
    ================================================================== */
@@ -60,11 +61,10 @@ const T = {
   REACH_M: 0.45,
   FADEUP_MS: 1200,
   HOLD_S: 1.5,
-  YAW_F: 0.55,            // texel u of the sunset road in the equirect
 };
 
 /* ==================================================================
-   Renderer / scene / camera
+   Renderer / scene / camera / lights
    ================================================================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -74,32 +74,197 @@ renderer.xr.setReferenceSpaceType('local-floor');   // seated
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 60);
-scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x20242a, 0.7));
+scene.background = new THREE.Color(0x05060c);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 160);
+scene.add(camera);
+
+const hemi = new THREE.HemisphereLight(0x8a7bb8, 0x1a1410, 0.55);
+scene.add(hemi);
 
 /* ==================================================================
-   360 vista sphere (equirectangular). Starts black; yaw offset centers
-   the sunset road (texel u=YAW_F) on the user's initial forward (-Z,
-   which three.js SphereGeometry maps to texture u=0.75).
+   Dusk sky dome — shader gradient (indigo zenith -> amber horizon)
+   with a low sun glow in the forward (-Z) direction.
    ================================================================== */
-const vid = document.createElement('video');
-vid.src = 'scene1-vista-360.mp4';
-vid.preload = 'auto';
-vid.playsInline = true;
-vid.loop = true;
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  vertexShader: `
+    varying vec3 vDir;
+    void main() {
+      vDir = normalize(position);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    varying vec3 vDir;
+    void main() {
+      float h = clamp(vDir.y, -0.05, 1.0);
+      vec3 zen = vec3(0.030, 0.045, 0.130);
+      vec3 mid = vec3(0.200, 0.130, 0.310);
+      vec3 hor = vec3(0.930, 0.500, 0.220);
+      vec3 col = mix(hor, mid, smoothstep(0.0, 0.28, h));
+      col = mix(col, zen, smoothstep(0.22, 0.85, h));
+      vec3 sunDir = normalize(vec3(0.0, 0.06, -1.0));
+      float s = max(dot(normalize(vDir), sunDir), 0.0);
+      col += vec3(1.0, 0.55, 0.25) * pow(s, 20.0) * 0.55;
+      col += vec3(1.0, 0.72, 0.42) * pow(s, 300.0) * 1.1;
+      gl_FragColor = vec4(col, 1.0);
+    }`
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(90, 32, 24), skyMat));
 
-const vidTex = new THREE.VideoTexture(vid);
-vidTex.colorSpace = THREE.SRGBColorSpace;
-vidTex.wrapS = THREE.RepeatWrapping;
-vidTex.offset.x = T.YAW_F - 0.75;   // -0.20
-const sphereMat = new THREE.MeshBasicMaterial({ map: vidTex, side: THREE.BackSide });
-sphereMat.color.setHex(0x000000);    // darkness until "open your eyes"
-const videoSphere = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48), sphereMat);
-scene.add(videoSphere);
+/* Stars — fade in after the eyes open */
+const starGeo = new THREE.BufferGeometry();
+{
+  const n = 900, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(Math.random() * 0.85);
+    const r = 80;
+    pos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = r * Math.cos(ph) + 6;
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+}
+const starMat = new THREE.PointsMaterial({
+  color: 0xcfd8ff, size: 0.35, sizeAttenuation: true,
+  transparent: true, opacity: 0, depthWrite: false, fog: false
+});
+scene.add(new THREE.Points(starGeo, starMat));
 
 /* ==================================================================
-   Audio — synth chimes + pre-recorded sherpa narration
+   Mountain ridges — fractal silhouettes on canvas, wrapped on
+   BackSide cylinders with alphaTest cutout (crisp, correctly sorted).
+   Near = dark, far = hazy violet. Farthest layer gets alpenglow snow.
+   ================================================================== */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function ridgeTexture(w, h, seed, baseY, amp, color, snowColor) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const rnd = mulberry32(seed);
+  const N = 14;
+  let pts = [];
+  for (let i = 0; i <= N; i++) pts.push(baseY + (rnd() * 2 - 1) * amp);
+  pts[N] = pts[0];                                   // tileable seam
+  for (let s = 0; s < 4; s++) {
+    const np = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const m = (pts[i - 1] + pts[i]) / 2 + (rnd() * 2 - 1) * amp * Math.pow(0.5, s + 1);
+      np.push(m, pts[i]);
+    }
+    pts = np;
+  }
+  pts[pts.length - 1] = pts[0];
+  const stepX = w / (pts.length - 1);
+  g.beginPath(); g.moveTo(0, h);
+  pts.forEach((y, i) => g.lineTo(i * stepX, Math.max(8, y)));
+  g.lineTo(w, h); g.closePath();
+  g.fillStyle = color; g.fill();
+  if (snowColor) {                                   // alpenglow snow on the peaks
+    g.save(); g.clip();
+    const grad = g.createLinearGradient(0, 0, 0, baseY + amp);
+    grad.addColorStop(0, snowColor); grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad; g.fillRect(0, 0, w, baseY + amp * 1.2);
+    g.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+const RIDGE_W = 2048, RIDGE_H = 512;
+const ridgeLayers = [
+  { r: 26, hgt: 15, yc: 3.2, seed: 11, baseY: 300, amp: 90,  color: '#171224', snow: null },
+  { r: 34, hgt: 18, yc: 3.8, seed: 47, baseY: 290, amp: 110, color: '#2a2038', snow: null },
+  { r: 43, hgt: 22, yc: 4.4, seed: 83, baseY: 280, amp: 130, color: '#47335c', snow: null },
+  { r: 54, hgt: 27, yc: 5.0, seed: 29, baseY: 270, amp: 150, color: '#5f4470', snow: '#f2b98e' },
+];
+for (const L of ridgeLayers) {
+  const tex = ridgeTexture(RIDGE_W, RIDGE_H, L.seed, L.baseY, L.amp, L.color, L.snow);
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: false, alphaTest: 0.5, side: THREE.BackSide, fog: false
+  });
+  const cyl = new THREE.Mesh(new THREE.CylinderGeometry(L.r, L.r, L.hgt, 72, 1, true), mat);
+  cyl.position.y = L.yc;
+  scene.add(cyl);
+}
+
+/* ==================================================================
+   Ground — dark dusk earth with a faint winding path toward the portals
+   ================================================================== */
+{
+  const c = document.createElement('canvas'); c.width = c.height = 1024;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(512, 512, 40, 512, 512, 512);
+  grad.addColorStop(0, '#181b2c'); grad.addColorStop(0.55, '#0e1120'); grad.addColorStop(1, '#060810');
+  g.fillStyle = grad; g.fillRect(0, 0, 1024, 1024);
+  // faint path: canvas top (-V) maps to forward (-Z) after rotateX(-PI/2)
+  g.strokeStyle = 'rgba(122,98,66,0.55)'; g.lineWidth = 54; g.lineCap = 'round';
+  g.shadowColor = 'rgba(122,98,66,0.5)'; g.shadowBlur = 34;
+  g.beginPath(); g.moveTo(512, 1024);
+  g.bezierCurveTo(430, 780, 610, 620, 512, 330);
+  g.stroke();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(70, 48),
+    new THREE.MeshBasicMaterial({ map: tex, fog: false })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+}
+
+/* ==================================================================
+   Prayer flags — catenary lines with colored quads, gentle wave
+   ================================================================== */
+const FLAG_COLORS = ['#2f5fb3', '#e9e4d6', '#c23b2e', '#2e9e5b', '#e8b93c'];
+const wavingFlags = [];
+function flagLine(a, b, sag, count) {
+  const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b);
+  const mid = va.clone().add(vb).multiplyScalar(0.5); mid.y -= sag;
+  const curve = new THREE.QuadraticBezierCurve3(va, mid, vb);
+  const lineGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(32));
+  scene.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x4a3b28 })));
+  for (const end of [va, vb]) {                       // wooden poles
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.024, end.y, 10),
+      new THREE.MeshBasicMaterial({ color: 0x2c2318 })
+    );
+    pole.position.set(end.x, end.y / 2, end.z);
+    scene.add(pole);
+  }
+  for (let i = 1; i <= count; i++) {
+    const t = i / (count + 1);
+    const p = curve.getPoint(t);
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.062, 0.046),
+      new THREE.MeshBasicMaterial({ color: FLAG_COLORS[i % FLAG_COLORS.length], side: THREE.DoubleSide })
+    );
+    flag.position.copy(p); flag.position.y -= 0.030;
+    flag.userData = { baseY: Math.atan2(vb.x - va.x, vb.z - va.z), ph: Math.random() * 6.28 };
+    flag.rotation.y = flag.userData.baseY;
+    scene.add(flag);
+    wavingFlags.push(flag);
+  }
+}
+flagLine([-3.4, 2.75, -2.0], [3.4, 2.95, -2.4], 0.45, 22);
+flagLine([-3.1, 2.55, 1.0], [1.8, 2.35, -3.4], 0.40, 18);
+
+/* Camera-attached black fade plane (DARK -> FADEUP).
+   depthTest stays ON so nearer interactables (eye marker) punch through. */
+const fadeMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 1 });
+const fadePlane = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), fadeMat);
+fadePlane.position.set(0, 0, -0.5);
+fadePlane.renderOrder = 50;
+camera.add(fadePlane);
+
+/* ==================================================================
+   Audio — synth chimes + pre-recorded guide narration + music bed
    ================================================================== */
 let AC = null;
 function audio() { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); return AC; }
@@ -120,7 +285,7 @@ const sfxIgnite = () => { blip(523, 180, 'sine', 0.22); blip(659, 220, 'sine', 0
 
 /* Narration: one MP3 per beat, chained defensively (a failure skips ahead). */
 const NARR = {};
-for (const n of ['a1','a2','a3','a4','a5','a6']) {
+for (const n of ['a1','a2','a3','a4','a5','a6','a7','a8']) {
   const el = new Audio('audio/' + n + '.mp3');
   el.preload = 'auto';
   NARR[n] = el;
@@ -143,17 +308,14 @@ function playNarr(name, onDone) {
 }
 function narrLater(ms, fn) { narrTimer = setTimeout(fn, ms); }
 
-/* Music bed — "Almost in F" by Kevin MacLeod (CC BY 4.0), looped low under narration. */
+/* Music bed — "Almost in F" by Kevin MacLeod (CC BY 4.0), looped low. */
 const musicBed = new Audio('audio/music_bed.mp3');
 musicBed.loop = true;
 musicBed.volume = 0.14;
 musicBed.preload = 'auto';
 function startMusic() {
-  try {
-    musicBed.currentTime = 0;
-    const p = musicBed.play();
-    if (p && p.catch) p.catch(() => {});
-  } catch (e) {}
+  try { musicBed.currentTime = 0; const p = musicBed.play(); if (p && p.catch) p.catch(() => {}); }
+  catch (e) {}
 }
 function stopMusic() { try { musicBed.pause(); } catch (e) {} }
 
@@ -166,7 +328,7 @@ const caption = new THREE.Mesh(
   new THREE.PlaneGeometry(0.9, 0.1125),
   new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false })
 );
-caption.renderOrder = 5; caption.visible = false;
+caption.renderOrder = 60; caption.visible = false;   // above the fade plane
 scene.add(caption);
 function setCaption(text) {
   const c = capCanvas.getContext('2d');
@@ -192,11 +354,11 @@ function placeCaption(dy = -0.28) {
    ================================================================== */
 const eye = new THREE.Group();
 const eyeCore = new THREE.Mesh(
-  new THREE.SphereGeometry(0.020, 24, 16),          // 20mm visual
+  new THREE.SphereGeometry(0.020, 24, 16),
   new THREE.MeshStandardMaterial({ color: 0xffe6b0, emissive: 0xc98f1f, roughness: 0.4 })
 );
 const eyeHit = new THREE.Mesh(
-  new THREE.SphereGeometry(0.030, 12, 8),           // 30mm collider (>=22mm rule)
+  new THREE.SphereGeometry(0.030, 12, 8),
   new THREE.MeshBasicMaterial({ visible: false })
 );
 eye.add(eyeCore, eyeHit);
@@ -205,16 +367,18 @@ scene.add(eye);
 
 const pulseRing = new THREE.Mesh(
   new THREE.RingGeometry(0.028, 0.033, 48),
-  new THREE.MeshBasicMaterial({ color: 0xffe6b0, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+  new THREE.MeshBasicMaterial({ color: 0xffe6b0, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthTest: false })
 );
+pulseRing.renderOrder = 60;
 pulseRing.visible = false;
 scene.add(pulseRing);
 
 // Pinch-progress ring (manual detector drives this; runtime events do the click)
 const progRing = new THREE.Mesh(
   new THREE.RingGeometry(0.040, 0.047, 48),
-  new THREE.MeshBasicMaterial({ color: 0xffe1a1, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+  new THREE.MeshBasicMaterial({ color: 0xffe1a1, transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthTest: false })
 );
+progRing.renderOrder = 60;
 progRing.visible = false;
 scene.add(progRing);
 let progShown = -1;
@@ -233,13 +397,12 @@ function placeEyeMarker() {
   eye.position.copy(p).addScaledVector(fwd, T.REACH_M);
   eye.position.y = p.y - 0.10;
   eye.visible = true;
-  eye.scale.setScalar(1);
   eyeCore.material.emissive.setHex(0xc98f1f);
   pulseRing.visible = true;
 }
 
 /* ==================================================================
-   The butter lamp — the one ritual interaction
+   The butter lamp — the ritual interaction (hold 1.5s to ignite)
    ================================================================== */
 const lamp = new THREE.Group();
 const brassMat = new THREE.MeshStandardMaterial({ color: 0x9a7434, metalness: 0.85, roughness: 0.35 });
@@ -250,7 +413,6 @@ rim.rotation.x = Math.PI / 2;
 const flameMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, emissive: 0x000000, roughness: 0.6 });
 const flame = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.035, 16), flameMat);
 flame.position.y = 0.030;
-// soft glow sprite (revealed on ignite)
 const glowCanvas = document.createElement('canvas'); glowCanvas.width = glowCanvas.height = 128;
 {
   const g = glowCanvas.getContext('2d');
@@ -267,10 +429,10 @@ const glow = new THREE.Sprite(new THREE.SpriteMaterial({
 }));
 glow.scale.setScalar(0.22);
 glow.position.y = 0.035;
-const lampLight = new THREE.PointLight(0xffa040, 0, 6, 2);  // warm bloom, off until lit
+const lampLight = new THREE.PointLight(0xffa040, 0, 6, 2);
 lampLight.position.y = 0.06;
 const lampHit = new THREE.Mesh(
-  new THREE.SphereGeometry(0.035, 12, 8),           // 35mm collider
+  new THREE.SphereGeometry(0.035, 12, 8),
   new THREE.MeshBasicMaterial({ visible: false })
 );
 lampHit.position.y = 0.01;
@@ -287,13 +449,13 @@ function placeLamp() {
   lamp.position.y = p.y - 0.08;
   lamp.quaternion.copy(q);
   lamp.visible = true;
-  lamp.scale.setScalar(0.001);   // grows in
+  lamp.scale.setScalar(0.001);
 }
 function igniteVisual(now) {
   const k = Math.min(1, (now - igniteT) / 1200);
   const ease = 1 - Math.pow(1 - k, 3);
   lampLight.intensity = 2.4 * ease;
-  glow.material.opacity = 0.9 * ease * (0.92 + 0.08 * Math.sin(now / 160));  // living flicker
+  glow.material.opacity = 0.9 * ease * (0.92 + 0.08 * Math.sin(now / 160));
   flameMat.emissive.setHex(0xff7722);
   flameMat.emissiveIntensity = 2.2 * ease;
   flameMat.color.setHex(0xffd9a0);
@@ -308,6 +470,102 @@ function resetLamp() {
   flameMat.color.setHex(0x2b2b2b);
   flame.scale.setScalar(1);
 }
+
+/* ==================================================================
+   Memory portals — glowing rings holding LIVE flat video windows.
+   Flat 16:9 planes: sharp. Never wrapped on a sphere in this scene.
+   ================================================================== */
+const portals = [];
+function makePortal(videoSrc, narr, x, z) {
+  const grp = new THREE.Group();
+  grp.position.set(x, 1.35, z);
+  grp.lookAt(0, 1.35, 0);
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: 0x8a6a2f, metalness: 0.8, roughness: 0.35,
+    emissive: 0xff9a3c, emissiveIntensity: 0.35
+  });
+  const frame = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.028, 14, 56), frameMat);
+  const v = document.createElement('video');
+  v.src = videoSrc; v.muted = true; v.loop = true; v.playsInline = true; v.preload = 'auto';
+  const tex = new THREE.VideoTexture(v);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.repeat.set(0.5625, 1); tex.offset.set(0.21875, 0);   // center-square sample, no distortion
+  const win = new THREE.Mesh(
+    new THREE.CircleGeometry(0.315, 48),
+    new THREE.MeshBasicMaterial({ map: tex })
+  );
+  win.position.z = 0.005;
+  const hit = new THREE.Mesh(
+    new THREE.CircleGeometry(0.37, 24),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  hit.position.z = 0.01;
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.016, 0.022, 1.0, 10),
+    new THREE.MeshBasicMaterial({ color: 0x2c2318 })
+  );
+  pole.position.y = -0.85;
+  const pl = new THREE.PointLight(0xffb35c, 0, 5, 2);
+  pl.position.z = 0.3;
+  grp.add(frame, win, hit, pole, pl);
+  grp.scale.setScalar(0.001);
+  grp.visible = false;
+  scene.add(grp);
+  const P = { grp, frameMat, hit, video: v, light: pl, narr, popT: 0, revealed: false };
+  portals.push(P);
+  return P;
+}
+makePortal('portals/portal_terai.mp4', 'a7', -0.95, -1.35);
+makePortal('portals/portal_roadside.mp4', 'a8', 0.95, -1.35);
+function startPortalVideos() {
+  for (const P of portals) { try { P.video.play().catch(() => {}); } catch (e) {} }
+}
+function stopPortalVideos() {
+  for (const P of portals) { try { P.video.pause(); } catch (e) {} }
+}
+
+/* ==================================================================
+   Photo gallery — the user's own Nepal frames, large and luminous.
+   Stills are perfectly sharp in VR: the crispness anchor of the scene.
+   ================================================================== */
+const prints = [];
+const texLoader = new THREE.TextureLoader();
+function makePrint(src, x, z) {
+  const grp = new THREE.Group();
+  grp.position.set(x, 0, z);
+  grp.lookAt(0, 1.35, 0);
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.015, 0.02, 1.02, 10),
+    new THREE.MeshBasicMaterial({ color: 0x241d12 })
+  );
+  pole.position.y = 0.51;
+  const glowBack = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.00, 0.70),
+    new THREE.MeshBasicMaterial({ color: 0x6b4f1f })
+  );
+  glowBack.position.y = 1.35; glowBack.position.z = -0.012;
+  const back = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.96, 0.66),
+    new THREE.MeshBasicMaterial({ color: 0x0b0b0e })
+  );
+  back.position.y = 1.35; back.position.z = -0.006;
+  const tex = texLoader.load(src);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const photo = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.90, 0.60),
+    new THREE.MeshBasicMaterial({ map: tex })
+  );
+  photo.position.y = 1.35;
+  grp.add(pole, glowBack, back, photo);
+  grp.scale.setScalar(0.001);
+  grp.visible = false;
+  scene.add(grp);
+  prints.push(grp);
+}
+makePrint('photos/photo_flags.jpg', -1.75, -0.55);
+makePrint('photos/photo_valley.jpg', 1.75, -0.55);
+makePrint('photos/photo_terrace.jpg', -1.25, 1.65);
 
 /* ==================================================================
    Hands — models, rays, reticle, fade protocol
@@ -331,7 +589,7 @@ function makeHandSlot(i) {
       new THREE.SphereGeometry(0.008, 12, 8),
       new THREE.MeshBasicMaterial({ color: 0x88bbff })
     ),
-    hoverTarget: null,          // 'eye' | 'lamp' | null
+    hoverTarget: null,          // 'eye' | 'lamp' | 'portal0' | 'portal1' | null
     frozenO: new THREE.Vector3(), frozenD: new THREE.Vector3(), frozenUntil: 0,
     pinch: false, pendingPinch: false, pendingSince: 0,
     fade: 1, fading: 'none',
@@ -364,33 +622,42 @@ function onDisconnected(i) {
 
 /* ---- discrete selection: runtime events ONLY ---- */
 let lastSelectAt = 0;
-function activeHit() {
-  if (flow === Flow.DARK && eye.visible) return { mesh: eyeHit, name: 'eye' };
-  if (flow === Flow.END && eye.visible) return { mesh: eyeHit, name: 'eye' };
-  return null;   // lamp uses continuous hold, not discrete select
+let selectedName = null;   // which target the current press began on
+function portalHitActive() {
+  return flow === Flow.REVEAL || flow === Flow.END;
 }
 function onSelectStart(i) {
   const s = hands[i]; if (!s) return;
-  if (flow !== Flow.DARK && flow !== Flow.END) return;
   const now = performance.now();
-  if (s.hoverTarget === 'eye' && eye.visible && now - lastSelectAt > T.DOUBLE_FIRE_GUARD_MS) {
-    lastSelectAt = now;
-    sfxClick();
-    s.controller.getWorldPosition(s.frozenO); rayDir(s.controller, s.frozenD);
-    s.frozenUntil = now + T.RAY_FREEZE_MS;
-    eyeCore.position.z -= 0.007;                       // press beat: 7mm travel
+  if (now - lastSelectAt < T.DOUBLE_FIRE_GUARD_MS) return;
+  const hov = s.hoverTarget;
+  const eyeOk = (flow === Flow.DARK || flow === Flow.END) && hov === 'eye' && eye.visible;
+  const portalOk = portalHitActive() && (hov === 'portal0' || hov === 'portal1');
+  if (!eyeOk && !portalOk) return;
+  lastSelectAt = now;
+  selectedName = eyeOk ? 'eye' : hov;
+  sfxClick();
+  s.controller.getWorldPosition(s.frozenO); rayDir(s.controller, s.frozenD);
+  s.frozenUntil = now + T.RAY_FREEZE_MS;
+  if (eyeOk) {
+    eyeCore.position.z -= 0.007;
     eyeCore.material.emissive.setHex(0xe8b04a);
+  } else {
+    const P = portals[hov === 'portal0' ? 0 : 1];
+    P.popT = now;
+    P.frameMat.emissiveIntensity = 1.4;
+    playNarr(P.narr);
   }
 }
 function onSelectEnd(i) {
   const s = hands[i]; if (!s) return;
   eyeCore.position.z = 0;
-  if (lastSelectAt && performance.now() - lastSelectAt < 2000 && eye.visible &&
+  if (selectedName === 'eye' && eye.visible &&
       (flow === Flow.DARK || flow === Flow.END)) {
-    lastSelectAt = 0;
+    selectedName = null;
     if (flow === Flow.DARK) openEyes();
     else resetScene();
-  }
+  } else selectedName = null;
 }
 
 function rayDir(controller, out) {
@@ -414,7 +681,7 @@ function updatePinch(s, now) {
   if (s.pendingPinch !== s.pinch && now - s.pendingSince > T.DEBOUNCE_MS) s.pinch = s.pendingPinch;
 }
 
-/* ---- hover via raycast against the active target ---- */
+/* ---- hover via raycast against active targets ---- */
 const raycaster = new THREE.Raycaster();
 function updateHover(s, now) {
   let o, d;
@@ -426,17 +693,22 @@ function updateHover(s, now) {
     tmpQ.setFromUnitVectors(NEG_Z, d);
     s.ray.quaternion.copy(tmpQ);
   }
-  const hit0 = activeHit();
-  const lampActive = flow === Flow.LAMP && lamp.visible && !lampLit;
   raycaster.set(o, d); raycaster.far = 5;
   let target = null;
-  if (hit0) {
-    const hits = raycaster.intersectObject(hit0.mesh, false);
-    if (hits.length > 0) target = { name: hit0.name, point: hits[0].point };
+  if ((flow === Flow.DARK || flow === Flow.END) && eye.visible) {
+    const hits = raycaster.intersectObject(eyeHit, false);
+    if (hits.length > 0) target = { name: 'eye', point: hits[0].point };
   }
-  if (!target && lampActive) {
+  if (!target && flow === Flow.LAMP && lamp.visible && !lampLit) {
     const hits = raycaster.intersectObject(lampHit, false);
     if (hits.length > 0) target = { name: 'lamp', point: hits[0].point };
+  }
+  if (!target && portalHitActive()) {
+    for (let pi = 0; pi < portals.length; pi++) {
+      if (!portals[pi].revealed) continue;
+      const hits = raycaster.intersectObject(portals[pi].hit, false);
+      if (hits.length > 0) { target = { name: 'portal' + pi, point: hits[0].point }; break; }
+    }
   }
   const name = target ? target.name : null;
   if (name !== s.hoverTarget) {
@@ -446,6 +718,13 @@ function updateHover(s, now) {
     else eyeCore.material.emissive.setHex(0xc98f1f);
     if (name === 'lamp') { flameMat.emissive.setHex(0x331a08); s.reticle.material.color.setHex(0xffb35c); }
     else if (!lampLit) flameMat.emissive.setHex(0x000000);
+    if (name && name.startsWith('portal')) {
+      const P = portals[name === 'portal0' ? 0 : 1];
+      P.frameMat.emissiveIntensity = 0.8;
+      s.reticle.material.color.setHex(0xffc861);
+    } else {
+      for (const P of portals) if (performance.now() - P.popT > 900) P.frameMat.emissiveIntensity = 0.35;
+    }
     if (!name) s.reticle.material.color.setHex(0x88bbff);
   }
   if (target) {
@@ -457,7 +736,7 @@ function updateHover(s, now) {
 function anyHoverLamp() { return hands.some(s => s && s.hoverTarget === 'lamp'); }
 function anyHoverEye() { return hands.some(s => s && s.hoverTarget === 'eye'); }
 
-/* ---- desktop fallback: mouse click = pinch, press-hold = lamp hold ---- */
+/* ---- desktop fallback: click = pinch, press-hold = lamp hold ---- */
 let desktopHold = false;
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (renderer.xr.isPresenting) return;
@@ -469,6 +748,18 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     if (flow === Flow.DARK) openEyes(); else resetScene();
     return;
   }
+  if (portalHitActive()) {
+    for (let pi = 0; pi < portals.length; pi++) {
+      if (!portals[pi].revealed) continue;
+      if (raycaster.intersectObject(portals[pi].hit, false).length > 0) {
+        sfxClick();
+        portals[pi].popT = performance.now();
+        portals[pi].frameMat.emissiveIntensity = 1.4;
+        playNarr(portals[pi].narr);
+        return;
+      }
+    }
+  }
   if (flow === Flow.LAMP && lamp.visible && !lampLit &&
       raycaster.intersectObject(lampHit, false).length > 0) {
     desktopHold = true;
@@ -477,12 +768,12 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 addEventListener('pointerup', () => { desktopHold = false; });
 
 /* ==================================================================
-   Scene flow: DARK -> FADEUP -> VISTA -> LAMP -> IGNITE -> END
+   Scene flow: DARK -> FADEUP -> WORLD -> LAMP -> IGNITE -> REVEAL -> END
    ================================================================== */
-const Flow = { DARK: 0, FADEUP: 1, VISTA: 2, LAMP: 3, IGNITE: 4, END: 5 };
+const Flow = { DARK: 0, FADEUP: 1, WORLD: 2, LAMP: 3, IGNITE: 4, REVEAL: 5, END: 6 };
 let flow = Flow.DARK;
-let fadeT = 0;
-let holdT = 0, holdTicked = false;
+let fadeT = 0, revealT = 0;
+let holdT = 0;
 
 function openEyes() {
   flow = Flow.FADEUP; fadeT = performance.now();
@@ -492,7 +783,7 @@ function openEyes() {
 }
 
 function showLamp() {
-  if (flow !== Flow.VISTA) return;
+  if (flow !== Flow.WORLD) return;
   flow = Flow.LAMP;
   resetLamp();
   placeLamp();
@@ -505,31 +796,43 @@ function igniteLamp() {
   lampLit = true;
   setProg(0);
   sfxIgnite();
-  playNarr('a5', () => narrLater(1500, showEnding));
+  hemi.intensity = 0.75;                       // the world brightens with the flame
+  playNarr('a5', () => narrLater(1500, revealWorld));
+}
+
+function revealWorld() {
+  if (flow !== Flow.IGNITE) return;
+  flow = Flow.REVEAL; revealT = performance.now();
+  for (const P of portals) { P.grp.visible = true; P.revealed = true; }
+  for (const pr of prints) pr.visible = true;
+  setCaption('Moments frozen in light.');
+  placeCaption();
+  playNarr('a6', showEnding);
 }
 
 function showEnding() {
   flow = Flow.END;
   setCaption('The trail is waiting.');
   placeCaption();
-  playNarr('a6');
-  // replay marker (reuses the eye marker)
   placeEyeMarker();
 }
 
 function resetScene() {
   stopNarr();
   flow = Flow.DARK;
-  try { vid.pause(); } catch (e) {}
-  vid.currentTime = 0;
-  sphereMat.color.setHex(0x000000);
+  fadeMat.opacity = 1;
+  starMat.opacity = 0;
+  hemi.intensity = 0.55;
   lamp.visible = false;
   resetLamp();
+  for (const P of portals) { P.grp.visible = false; P.revealed = false; P.grp.scale.setScalar(0.001); P.frameMat.emissiveIntensity = 0.35; P.light.intensity = 0; P.popT = 0; }
+  for (const pr of prints) { pr.visible = false; pr.scale.setScalar(0.001); }
   holdT = 0; setProg(0);
   setCaption('Pinch to open your eyes.');
   placeCaption();
   placeEyeMarker();
   startMusic();
+  startPortalVideos();
   playNarr('a1');
 }
 
@@ -537,19 +840,27 @@ function resetScene() {
    Frame loop
    ================================================================== */
 const clock = new THREE.Clock();
+function easeOut(k) { return 1 - Math.pow(1 - k, 3); }
 function animate() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.1);
+  const t = now / 1000;
 
-  // DARK -> VISTA: 1.2s fade-up from black
+  // DARK -> WORLD: 1.2s fade from black, stars fade in
   if (flow === Flow.FADEUP) {
     const k = Math.min(1, (now - fadeT) / T.FADEUP_MS);
-    sphereMat.color.setScalar(k);
+    fadeMat.opacity = 1 - k;
+    starMat.opacity = k * 0.9;
     if (k >= 1) {
-      flow = Flow.VISTA;
-      vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); });
-      playNarr('a2', () => narrLater(2000, () => playNarr('a3', () => showLamp())));
+      flow = Flow.WORLD;
+      playNarr('a2', () => narrLater(1500, () => playNarr('a3', showLamp)));
     }
+  }
+
+  // prayer flags wave
+  for (const f of wavingFlags) {
+    f.rotation.y = f.userData.baseY + Math.sin(t * 2.2 + f.userData.ph) * 0.30;
+    f.rotation.x = Math.sin(t * 3.1 + f.userData.ph * 1.7) * 0.12;
   }
 
   // invitation pulse on the eye marker
@@ -568,34 +879,29 @@ function animate() {
   if (lamp.visible && lamp.scale.x < 1 && flow === Flow.LAMP) {
     lamp.scale.setScalar(Math.min(1, lamp.scale.x + dt * 2.5));
   }
-  // ignite bloom
-  if (lampLit && flow === Flow.IGNITE) igniteVisual(now);
-  if (lampLit && flow === Flow.END) {
-    glow.material.opacity = 0.9 * (0.92 + 0.08 * Math.sin(now / 160));  // keep flickering
-  }
+  // ignite bloom + living flicker
+  if (lampLit && (flow === Flow.IGNITE || flow === Flow.REVEAL || flow === Flow.END)) igniteVisual(now);
 
   // lamp hold: pinch-and-hold 1.5s (manual detector + hover)
   if (flow === Flow.LAMP && lamp.visible && !lampLit) {
     const holding = hands.some(s => s && s.pinch && s.hoverTarget === 'lamp') || desktopHold;
     if (holding) {
-      if (holdT === 0) { sfxTick(); holdTicked = true; }
+      if (holdT === 0) sfxTick();
       holdT += dt;
-      progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+      progRing.position.copy(lamp.position); progRing.position.y += 0.01;
       progRing.quaternion.copy(camera.quaternion);
       setProg(Math.min(1, holdT / T.HOLD_S));
       if (holdT >= T.HOLD_S) igniteLamp();
     } else {
-      holdT = Math.max(0, holdT - dt * 2);   // forgiving decay
-      if (holdT === 0) { if (progShown !== 0 && !anyHoverLamp()) setProg(0); }
-      else {
-        progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+      holdT = Math.max(0, holdT - dt * 2);
+      if (holdT > 0) {
+        progRing.position.copy(lamp.position); progRing.position.y += 0.01;
         progRing.quaternion.copy(camera.quaternion);
         setProg(holdT / T.HOLD_S);
-      }
+      } else if (progShown !== 0 && !anyHoverLamp()) setProg(0);
     }
-    // hover glow (beat 1) is handled in updateHover; ring follows lamp
     if (!holding && anyHoverLamp()) {
-      progRing.position.copy(lamp.position).add(new THREE.Vector3(0, 0.01, 0));
+      progRing.position.copy(lamp.position); progRing.position.y += 0.01;
       progRing.quaternion.copy(camera.quaternion);
     }
   }
@@ -609,13 +915,31 @@ function animate() {
       if (d < 0) continue;
       if (s.hoverTarget === 'eye' && d < T.RING_FILL_START_MM) {
         const prog = 1 - Math.min(1, Math.max(0, (d - T.PINCH_ON_MM) / (T.RING_FILL_START_MM - T.PINCH_ON_MM)));
-        if (d > best) best = d;
+        best = d;
         progRing.position.copy(eye.position);
         progRing.quaternion.copy(camera.quaternion);
         setProg(prog);
       }
     }
     if (best < 0 && progShown !== 0 && !anyHoverEye()) setProg(0);
+  }
+
+  // REVEAL: portals + prints grow in, portal glow lights fade up
+  if (flow === Flow.REVEAL || flow === Flow.END) {
+    const k = easeOut(Math.min(1, (now - revealT) / 900));
+    for (const P of portals) {
+      P.grp.scale.setScalar(Math.max(0.001, k));
+      P.light.intensity = 0.7 * k;
+    }
+    for (const pr of prints) pr.scale.setScalar(Math.max(0.001, k));
+  }
+  // portal pinch pop (relative to the current reveal scale — no compounding)
+  for (const P of portals) {
+    if (!P.popT) continue;
+    const pk = (now - P.popT) / 900;
+    if (pk >= 1) { P.popT = 0; P.frameMat.emissiveIntensity = 0.35; continue; }
+    const base = (flow === Flow.REVEAL) ? easeOut(Math.min(1, (now - revealT) / 900)) : 1;
+    P.grp.scale.setScalar(Math.max(0.001, base * (1 + Math.sin(pk * Math.PI) * 0.06)));
   }
 
   // captions stay head-anchored
@@ -681,8 +1005,8 @@ enterBtn.addEventListener('click', async () => {
       overlay.style.display = 'flex';
       stopNarr();
       stopMusic();
-      try { vid.pause(); } catch (e) {}
-      flow = Flow.DARK; sphereMat.color.setHex(0x000000);
+      stopPortalVideos();
+      flow = Flow.DARK; fadeMat.opacity = 1; starMat.opacity = 0;
     });
     dbg('session started');
   } catch (e) { xrmsg.textContent = 'Session failed: ' + e.message; }
